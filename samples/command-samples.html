@@ -56,13 +56,16 @@
   <p>單執行緒 io_uring + O_DIRECT,write → read → verify。通吃 NVMe / SATA / USB。並發由 <code>--qd</code> 控制。</p>
 
   <h3>基礎 sequential 讀寫驗證</h3>
-  <pre><code>sudo ./build/DiskIOStress --workload=seq_wrc --io-size=64K --qd=32 /dev/sdX</code></pre>
+  <pre><code>sudo ./build/DiskIOStress --workload=seq-verify --io-size=64K --qd=32 /dev/sdX</code></pre>
 
   <h3>基礎 random 讀寫驗證</h3>
-  <pre><code>sudo ./build/DiskIOStress --workload=rand_wrc --io-size=64K --qd=32 /dev/sdX</code></pre>
+  <pre><code>sudo ./build/DiskIOStress --workload=rand-verify --io-size=64K --qd=32 /dev/sdX</code></pre>
 
-  <h3>讀寫 mix(寫一輪、重讀驗證兩次)</h3>
-  <pre><code>sudo ./build/DiskIOStress --workload=seq_wrrc --io-size=64K --qd=32 /dev/sdX</code></pre>
+  <h3>順序寫、重讀驗證兩次</h3>
+  <pre><code>sudo ./build/DiskIOStress --workload=seq-verify-2x --io-size=64K --qd=32 /dev/sdX</code></pre>
+
+  <h3>併發混合讀寫(同時讀+寫,比例可調)</h3>
+  <pre><code>sudo ./build/DiskIOStress --workload=concurrent-rw --rw-ratio=70 --io-size=64K --qd=64 --test-time=10m /dev/sdX</code></pre>
 
   <h3>4 KiB 對齊 / 非對齊 / 混合(<code>--align</code> + <code>--align-mode</code>)</h3>
   <pre><code><span class="cmt"># 每道 command 都 4K 對齊</span>
@@ -79,15 +82,15 @@ sudo ./build/DiskIOStress --io-size=4K --align=4K --align-mode=unaligned --align
 sudo ./build/DiskIOStress --io-size=4K --align=4K --align-mode=unaligned --align-offset=random --seed=0x1234 /dev/sdX</code></pre>
 
   <h3>大 command(1 MiB transfer)</h3>
-  <pre><code>sudo ./build/DiskIOStress --workload=seq_wrc --io-size=1M --qd=16 /dev/sdX</code></pre>
+  <pre><code>sudo ./build/DiskIOStress --workload=seq-verify --io-size=1M --qd=16 /dev/sdX</code></pre>
 
   <h3>Trim mixed(寫/驗證後 trim,下一輪重寫)</h3>
-  <pre><code>sudo ./build/DiskIOStress --workload=rand_wrc --io-size=64K --qd=32 --trim /dev/sdX</code></pre>
+  <pre><code>sudo ./build/DiskIOStress --workload=rand-verify --io-size=64K --qd=32 --trim /dev/sdX</code></pre>
 
   <h3>限定範圍 / 限時 / 指定 seed(可重現)</h3>
   <pre><code>sudo ./build/DiskIOStress --ranges=0-16G --test-time=600 --seed=0xABCD /dev/sdX</code></pre>
 
-  <p>常用旗標:<code>--qd</code> <code>--io-size</code> <code>--ranges</code> <code>--workload</code>(seq_wrc/seq_wrrc/seq_w1rcn/rand_wrc)<code>--pattern</code>(random/addr/zero/one/inc_dword…)<code>--loops</code> <code>--test-time</code> <code>--seed</code> <code>--trim</code> <code>--no-direct</code>。</p>
+  <p>常用旗標:<code>--qd</code> <code>--io-size</code> <code>--ranges</code> <code>--workload</code>(seq-verify / rand-verify / seq-verify-2x / retention / concurrent-rw)<code>--rw-ratio</code>(concurrent-rw 用)<code>--pattern</code>(random/addr/zero/one/inc_dword…)<code>--loops</code> <code>--test-time</code> <code>--seed</code> <code>--trim</code> <code>--no-direct</code>。</p>
 </section>
 
 <!-- ===================== SINGLE ===================== -->

@@ -67,12 +67,19 @@ test_time = 604800
 pattern = random
 
 # ---- Workload ----
-# One of:
-#   seq_wrc      Sequential Write / Read / Compare
-#   seq_wrrc     Sequential Write + Repeat-Read-Last-10-Trunks Compare
-#   seq_w1rcn    Write once, then Read N times across loops
-#   rand_wrc     Random Write/Read/Compare (default)
-workload = rand_wrc
+# Phase-separated workloads write the WHOLE range, then read it all back and
+# compare (writes and reads never overlap). One of:
+#   seq-verify       sequential order: write whole range -> read back & verify
+#   rand-verify      random (seed-permuted) order, same write->verify (default)
+#   seq-verify-2x    like seq-verify but reads the range back twice
+#   retention        write once, then re-verify every later pass (data retention)
+#   concurrent-rw    reads + writes AT THE SAME TIME at --rw-ratio (set rw_ratio below)
+# (the old names seq_wrc / rand_wrc / seq_wrrc / seq_w1rcn / mix_rw still work)
+workload = rand-verify
+
+# ---- Read/write ratio (concurrent-rw only) ----
+# Percent of operations that are reads (rest are writes). Default 70.
+# rw_ratio = 70
 
 # ---- Random seed ----
 # 0 means "use current time() and print the chosen seed at startup".

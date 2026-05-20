@@ -175,6 +175,7 @@ void show_usage(int argc, char* argv[])
     printf("  -D, --test-time=N[s|m|h|d]  Run for this long, e.g. 30s / 10m / 2h (recommended)\n");
     printf("  -p, --pattern=NAME       Data pattern (see list below)\n");
     printf("  -w, --workload=NAME      Workload     (see list below)\n");
+    printf("      --rw-ratio=N         mix_rw only: %% of ops that are reads (default 70)\n");
     printf("  -s, --seed=N             Random seed (0 = use time())\n");
     printf("  -y, --yes                Skip the erase confirmation (CI). Still refuses system drives\n");
     printf("  -h, --help               Show this help\n");
@@ -182,7 +183,12 @@ void show_usage(int argc, char* argv[])
     printf("Patterns:");
     for (i = 0; gPatternMap[i].name; i++) printf(" %s", gPatternMap[i].name);
     printf("\nWorkloads:");
-    for (i = 0; gWorkloadMap[i].name; i++) printf(" %s", gWorkloadMap[i].name);
+    for (i = 0; gWorkloadMap[i].name; i++)
+    {
+        int j, dup = 0;   /* show canonical names only, not the legacy aliases */
+        for (j = 0; j < i; j++) if (gWorkloadMap[j].val == gWorkloadMap[i].val) { dup = 1; break; }
+        if (!dup) printf(" %s", gWorkloadMap[i].name);
+    }
     printf("\n\n");
 
     pCmd = &cmdList[0];

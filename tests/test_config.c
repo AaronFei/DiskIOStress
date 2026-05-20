@@ -41,19 +41,29 @@ static void test_parse_enum_pattern_unknown(void)
 
 static void test_parse_enum_workload(void)
 {
+    /* canonical names */
+    TEST_ASSERT_EQUAL_INT(WORKLOAD_RAND_WRC,  parse_enum("rand-verify",   gWorkloadMap));
+    TEST_ASSERT_EQUAL_INT(WORKLOAD_SEQ_WRC,   parse_enum("seq-verify",    gWorkloadMap));
+    TEST_ASSERT_EQUAL_INT(WORKLOAD_SEQ_WRRC,  parse_enum("seq-verify-2x", gWorkloadMap));
+    TEST_ASSERT_EQUAL_INT(WORKLOAD_SEQ_W1RCN, parse_enum("retention",     gWorkloadMap));
+    TEST_ASSERT_EQUAL_INT(WORKLOAD_MIX_RW,    parse_enum("concurrent-rw", gWorkloadMap));
+    /* legacy aliases must still parse */
     TEST_ASSERT_EQUAL_INT(WORKLOAD_RAND_WRC,  parse_enum("rand_wrc",  gWorkloadMap));
     TEST_ASSERT_EQUAL_INT(WORKLOAD_SEQ_WRC,   parse_enum("seq_wrc",   gWorkloadMap));
     TEST_ASSERT_EQUAL_INT(WORKLOAD_SEQ_WRRC,  parse_enum("seq_wrrc",  gWorkloadMap));
     TEST_ASSERT_EQUAL_INT(WORKLOAD_SEQ_W1RCN, parse_enum("seq_w1rcn", gWorkloadMap));
+    TEST_ASSERT_EQUAL_INT(WORKLOAD_MIX_RW,    parse_enum("mix_rw",    gWorkloadMap));
     TEST_ASSERT_EQUAL_INT(-1,                 parse_enum("nope",      gWorkloadMap));
 }
 
 static void test_enum_name_roundtrip(void)
 {
-    TEST_ASSERT_EQUAL_STRING("random",    enum_name(PATTERN_RANDOM,       gPatternMap));
-    TEST_ASSERT_EQUAL_STRING("zero",      enum_name(PATTERN_ALLZERO,      gPatternMap));
-    TEST_ASSERT_EQUAL_STRING("rand_wrc",  enum_name(WORKLOAD_RAND_WRC,    gWorkloadMap));
-    TEST_ASSERT_EQUAL_STRING("?",         enum_name(9999,                 gPatternMap));
+    TEST_ASSERT_EQUAL_STRING("random",       enum_name(PATTERN_RANDOM,    gPatternMap));
+    TEST_ASSERT_EQUAL_STRING("zero",         enum_name(PATTERN_ALLZERO,   gPatternMap));
+    /* enum_name returns the canonical (first) name, not a legacy alias */
+    TEST_ASSERT_EQUAL_STRING("rand-verify",  enum_name(WORKLOAD_RAND_WRC, gWorkloadMap));
+    TEST_ASSERT_EQUAL_STRING("concurrent-rw",enum_name(WORKLOAD_MIX_RW,   gWorkloadMap));
+    TEST_ASSERT_EQUAL_STRING("?",            enum_name(9999,              gPatternMap));
 }
 
 /* ---------- config_apply_kv ---------- */

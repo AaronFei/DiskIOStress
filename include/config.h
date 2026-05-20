@@ -18,6 +18,7 @@ typedef struct
     int  simple_progress; /* single-line, 5s-average progress (no ANSI multi-line) */
     U32  read_retries;    /* re-reads of a sector on verify mismatch (transient vs persistent) */
     int  continue_on_error; /* keep running after a persistent error (else stop) */
+    U32  rw_ratio;        /* mix_rw workload: percent of ops that are reads (0..100) */
     int  trim;         /* trim (BLKDISCARD) the range after each verify pass */
     U32  align;            /* alignment boundary in bytes (0 = off / natural grid) */
     int  align_mode;       /* 0 aligned, 1 unaligned, 2 mixed (when align > 0) */

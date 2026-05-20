@@ -94,6 +94,8 @@ typedef struct
     struct timeval start, last;
     U64 wbytes, rbytes;          /* cumulative bytes per phase */
     U64 last_total;              /* w+r at last multi sample */
+    U64 last_wb, last_rb;        /* per-phase bytes at last multi sample (mix mode) */
+    int mix;                     /* concurrent R/W: rate each row independently */
     double w_secs, r_secs;       /* approx time spent writing / reading */
     double wcur, rcur;           /* latest write / read MB/s */
     double whist[MTR_HIST], rhist[MTR_HIST];
@@ -157,13 +159,18 @@ static void meter_tick(Meter* m, U64 bytes, char phase)
     if (phase == 'W') m->wbytes += bytes; else m->rbytes += bytes;
     gettimeofday(&now, NULL);
 
-    /* per-phase time at boundaries (mode-independent; for report averages) */
-    if (m->cur_phase == 0) { m->cur_phase = phase; m->phase_t0 = now; }
-    else if (phase != m->cur_phase)
+    /* per-phase time at boundaries (for report averages). In mix mode reads and
+     * writes overlap, so phase-segment timing is meaningless — meter_finish uses
+     * total elapsed for both instead. */
+    if (!m->mix)
     {
-        double seg = (now.tv_sec - m->phase_t0.tv_sec) + (now.tv_usec - m->phase_t0.tv_usec) / 1e6;
-        if (m->cur_phase == 'W') m->w_secs += seg; else m->r_secs += seg;
-        m->cur_phase = phase; m->phase_t0 = now;
+        if (m->cur_phase == 0) { m->cur_phase = phase; m->phase_t0 = now; }
+        else if (phase != m->cur_phase)
+        {
+            double seg = (now.tv_sec - m->phase_t0.tv_sec) + (now.tv_usec - m->phase_t0.tv_usec) / 1e6;
+            if (m->cur_phase == 'W') m->w_secs += seg; else m->r_secs += seg;
+            m->cur_phase = phase; m->phase_t0 = now;
+        }
     }
 
     el  = (int)(now.tv_sec - m->start.tv_sec);
@@ -186,11 +193,24 @@ static void meter_tick(Meter* m, U64 bytes, char phase)
 
     dt = (now.tv_sec - m->last.tv_sec) + (now.tv_usec - m->last.tv_usec) / 1e6;
     if (dt < 0.25) return;
-    total = m->wbytes + m->rbytes;
-    rate  = (double)(total - m->last_total) / (1024.0 * 1024.0) / dt;
-    if (phase == 'W') { m->wcur = rate; meter_push(m->whist, &m->wn, rate); }
-    else              { m->rcur = rate; meter_push(m->rhist, &m->rn, rate); }
-    m->last = now; m->last_total = total;
+    if (m->mix)
+    {
+        /* reads and writes overlap — rate each row from its own byte delta and
+         * advance both sparklines together so the timelines stay aligned. */
+        double wr = (double)(m->wbytes - m->last_wb) / (1024.0 * 1024.0) / dt;
+        double rr = (double)(m->rbytes - m->last_rb) / (1024.0 * 1024.0) / dt;
+        m->wcur = wr; meter_push(m->whist, &m->wn, wr);
+        m->rcur = rr; meter_push(m->rhist, &m->rn, rr);
+    }
+    else
+    {
+        total = m->wbytes + m->rbytes;
+        rate  = (double)(total - m->last_total) / (1024.0 * 1024.0) / dt;
+        if (phase == 'W') { m->wcur = rate; meter_push(m->whist, &m->wn, rate); }
+        else              { m->rcur = rate; meter_push(m->rhist, &m->rn, rate); }
+        m->last_total = total;
+    }
+    m->last = now; m->last_wb = m->wbytes; m->last_rb = m->rbytes;
 
     {
         char wtop[256], wbot[256], rtop[256], rbot[256], pfx[64];
@@ -218,8 +238,14 @@ static void meter_tick(Meter* m, U64 bytes, char phase)
 static void meter_finish(Meter* m)
 {
     struct timeval now;
-    if (!m->cur_phase) return;
     gettimeofday(&now, NULL);
+    if (m->mix)   /* overlapping R/W: average each over total elapsed */
+    {
+        m->w_secs = m->r_secs =
+            (now.tv_sec - m->start.tv_sec) + (now.tv_usec - m->start.tv_usec) / 1e6;
+        return;
+    }
+    if (!m->cur_phase) return;
     {
         double seg = (now.tv_sec - m->phase_t0.tv_sec) + (now.tv_usec - m->phase_t0.tv_usec) / 1e6;
         if (m->cur_phase == 'W') m->w_secs += seg; else m->r_secs += seg;
@@ -237,6 +263,7 @@ static void wl_flags(U32 wl, int* random_order, int* write_each, int* reread)
         case WORKLOAD_SEQ_WRRC:  *random_order = 0; *write_each = 1; *reread = 2; break;
         case WORKLOAD_SEQ_W1RCN: *random_order = 0; *write_each = 0; *reread = 1; break;
         case WORKLOAD_RAND_WRC:  *random_order = 1; *write_each = 1; *reread = 1; break;
+        case WORKLOAD_MIX_RW:    *random_order = 1; *write_each = 1; *reread = 1; break;
         default: break;
     }
 }
@@ -493,6 +520,147 @@ static int stress_verify_pass(UringEngine* e, const Mapper* m, ThreadInfo_t* ti,
     return continue_on_error ? 0 : 2;
 }
 
+/* splitmix64-style deterministic hash: op decisions/positions are pure functions
+ * of (op index, seed, salt) so a mix_rw run is fully reproducible. */
+static U64 mix_hash(U64 k, U32 seed, U32 salt)
+{
+    U64 x = k * 0x9E3779B97F4A7C15ULL + (U64)seed * 0x100000001B3ULL + salt;
+    x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ULL;
+    x ^= x >> 27; x *= 0x94D049BB133111EBULL;
+    x ^= x >> 31;
+    return x;
+}
+
+/* Concurrent mixed read/write: issue `nops` operations on the QD ring, each
+ * independently chosen read-vs-write by `read_pct`, position by the mapper.
+ * Reads scrub-verify (magic/LBA/CRC) whatever is currently there — valid for any
+ * generation, so a concurrent overwrite is not a false failure; writes stamp
+ * `wgen`. We never let a read and a write target the same LBA at once (O_DIRECT
+ * overlap has no atomicity guarantee → would look like a torn read).
+ * Returns 0 PASS, 2 FAIL, <0 IO error. Stops early on s_stop/time_up. */
+static int stress_mix_pass(UringEngine* e, const Mapper* m, ThreadInfo_t* ti,
+                           U32 mapgen, U32 wgen, U32 read_pct, int random_order,
+                           U32 unit_blocks, U32 qd, unsigned char** bufs, U64* slotlba,
+                           U32* freestk, UringCqe* cqes, U64* checked, U64* written_blocks,
+                           Meter* mtr, U64 nops, U32 retries, int continue_on_error,
+                           U64* transient, U64* errors)
+{
+    U32 blk = uring_block_size(e);
+    U32 unit_bytes = unit_blocks * blk;
+    U32 ntop = 0, inflight = 0, i;
+    U64 k = 0, total = mapper_total(m);
+    int fail = 0, io_err = 0, rc = 0;
+    int got_mismatch = 0;
+    U64 mm_lba = 0;
+    U32 mm_bi = 0, mm_es = 0;
+    TagError_t mm_te = TAG_OK;
+    unsigned char* is_read = (unsigned char*)calloc(qd, 1);
+    U64*           busy    = (U64*)malloc((size_t)qd * sizeof(U64));
+
+    if (!is_read || !busy) { free(is_read); free(busy); return -1; }
+    for (i = 0; i < qd; i++) { freestk[ntop++] = i; busy[i] = (U64)-1; }
+
+    while (k < nops && !s_stop && !fail && !time_up())
+    {
+        while (inflight < qd && k < nops)
+        {
+            U32 bi = freestk[ntop - 1];
+            int rd = (int)((mix_hash(k, m->seed, 0xA5u) % 100u) < read_pct);
+            U64 pos = mix_hash(k, m->seed, 0x5Au) % total;
+            U64 lba;
+            U32 tries = 0;
+
+            for (;;)   /* nudge off any LBA currently in flight */
+            {
+                U32 s; int clash = 0;
+                lba = mapper_lba(m, random_order, mapgen, pos);
+                for (s = 0; s < qd; s++) if (busy[s] == lba) { clash = 1; break; }
+                if (!clash || ++tries > 8) break;
+                pos = (pos + 1) % total;
+            }
+
+            slotlba[bi] = lba; is_read[bi] = (unsigned char)rd; busy[bi] = lba;
+            if (rd)
+            {
+                if (uring_queue_read(e, bufs[bi], lba, unit_blocks, bi) < 0)
+                { busy[bi] = (U64)-1; break; }
+            }
+            else
+            {
+                fill_unit_payload(bufs[bi], unit_blocks, blk, lba, wgen, ti->pattern_type);
+                ti->block_count = unit_blocks;
+                stamp_sector_tags(bufs[bi], ti, lba, wgen);
+                if (uring_queue_write(e, bufs[bi], lba, unit_blocks, bi, 0) < 0)
+                { busy[bi] = (U64)-1; break; }
+            }
+            ntop--; inflight++; k++;
+        }
+        if (uring_submit(e) < 0) { rc = -1; goto drain; }
+        {
+            int r = uring_reap(e, cqes, qd, inflight ? 1 : 0);
+            if (r < 0) { rc = -1; goto drain; }
+            for (i = 0; i < (U32)r; i++)
+            {
+                U32 bi = (U32)cqes[i].user_data;
+                if (cqes[i].result != (S32)unit_bytes) { io_err = 1; fail = 1; }
+                else if (is_read[bi])
+                {
+                    if (!got_mismatch)
+                    {
+                        U32 es = 0;
+                        TagError_t te;
+                        ti->block_count = unit_blocks;
+                        te = scrub_sector_tags(bufs[bi], ti, slotlba[bi], &es);
+                        if (te != TAG_OK)
+                        { got_mismatch = 1; mm_lba = slotlba[bi]; mm_bi = bi; mm_es = es; mm_te = te; fail = 1; }
+                    }
+                    *checked += unit_blocks;
+                    meter_tick(mtr, unit_bytes, 'R');
+                }
+                else
+                {
+                    *written_blocks += unit_blocks;
+                    meter_tick(mtr, unit_bytes, 'W');
+                }
+                busy[bi] = (U64)-1; freestk[ntop++] = bi; inflight--;
+            }
+        }
+    }
+
+drain:
+    while (inflight > 0)
+    {
+        int r = uring_reap(e, cqes, qd, 1);
+        if (r < 0) break;
+        for (i = 0; i < (U32)r; i++) { busy[(U32)cqes[i].user_data] = (U64)-1; freestk[ntop++] = (U32)cqes[i].user_data; inflight--; }
+    }
+    free(is_read); free(busy);
+
+    if (rc < 0 || io_err) return -1;
+    if (!got_mismatch) return 0;
+
+    /* same classification policy as verify: re-read; transient (wrong-then-right)
+     * and persistent both fail. No write touches mm_lba after fail (overlap is
+     * avoided and we stop issuing), so the re-read is meaningful. */
+    if (retries > 0 && stress_reread(e, ti, bufs[mm_bi], mm_lba, mapgen, 1 /*scrub*/, unit_blocks, retries))
+    {
+        pthread_mutex_lock(&mutex_msg);
+        printf("\n%s*** TRANSIENT READ ERROR @LBA %08llX (first read: %s, re-read OK)"
+               " => firmware/controller bug%s\n",
+               COLOR_RED, (unsigned long long)mm_lba, tag_error_str(mm_te), COLOR_RESET);
+        pthread_mutex_unlock(&mutex_msg);
+        (*transient)++;
+        return continue_on_error ? 0 : 2;
+    }
+    pthread_mutex_lock(&mutex_msg);
+    printf("\n%s*** PERSISTENT ERROR @LBA %08llX: %s (after %u re-reads)%s\n",
+           COLOR_RED, (unsigned long long)mm_lba, tag_error_str(mm_te), retries, COLOR_RESET);
+    pthread_mutex_unlock(&mutex_msg);
+    dump_sector_error(ti, bufs[mm_bi], mm_lba, mm_es, mapgen);
+    (*errors)++;
+    return continue_on_error ? 0 : 2;
+}
+
 int stress_run(const char* device, const Config_t* cfg)
 {
     U32 qd = cfg->qd ? cfg->qd : 32;
@@ -568,6 +736,7 @@ int stress_run(const char* device, const Config_t* cfg)
     g_start = start;
     g_test_time = cfg->test_time;
     meter_init(&meter, cfg->simple_progress);
+    meter.mix = (cfg->workload == WORKLOAD_MIX_RW);
 
     /* read-only scrub: one pass, verify magic/LBA/CRC of whatever is on the device */
     if (cfg->verify_only)
@@ -576,6 +745,37 @@ int stress_run(const char* device, const Config_t* cfg)
                                    bufs, slotlba, freestk, cqes, &checked_total, &meter, mapper_total(&map),
                                    cfg->read_retries, cfg->continue_on_error, &transient_total, &error_total);
         status = (v < 0) ? STATUS_READ_ERROR : (v == 2) ? STATUS_COMPARE_ERROR : STATUS_PASS;
+        goto done;
+    }
+
+    /* Concurrent mixed read/write: pre-seed the whole range once (so reads always
+     * hit valid tagged data), then run overlapping R/W at --rw-ratio. */
+    if (cfg->workload == WORKLOAD_MIX_RW)
+    {
+        U64 total = mapper_total(&map);
+        U32 read_pct = cfg->rw_ratio;
+        S64 w;
+
+        printf("  concurrent-rw: pre-seeding %llu units, then %u%% reads / %u%% writes (concurrent)\n",
+               (unsigned long long)total, read_pct, 100 - read_pct);
+        w = stress_write_pass(e, &map, &ti, 1, cfg->pattern, random_order, unit_blocks, qd, bufs, freestk, cqes, &meter);
+        if (w < 0) { status = STATUS_WRITE_ERROR; goto done; }
+        written_total += (U64)w * unit_blocks;
+        uring_flush(e);
+
+        for (loop = 0; loop < cfg->nr_loop && !s_stop && !time_up(); loop++)
+        {
+            int v;
+            ti.cr_loop = loop;
+            meter_progress(&meter, loop + 1, loop + 2);
+            v = stress_mix_pass(e, &map, &ti, 1 /*mapgen*/, (U32)(loop + 2) /*wgen*/, read_pct,
+                                random_order, unit_blocks, qd, bufs, slotlba, freestk, cqes,
+                                &checked_total, &written_total, &meter, total,
+                                cfg->read_retries, cfg->continue_on_error, &transient_total, &error_total);
+            if (v < 0) { status = STATUS_READ_ERROR; goto done; }
+            if (v == 2) { status = STATUS_COMPARE_ERROR; goto done; }
+            if (s_stop || time_up()) { status = STATUS_FORCE_STOP; break; }
+        }
         goto done;
     }
 

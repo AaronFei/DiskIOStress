@@ -95,6 +95,7 @@ enum
     WORKLOAD_SEQ_WRRC,
     WORKLOAD_SEQ_W1RCN,
     WORKLOAD_RAND_WRC,
+    WORKLOAD_MIX_RW,      /* concurrent read+write at a ratio (not phase-separated) */
     WORKLOAD_MAX
 };
 

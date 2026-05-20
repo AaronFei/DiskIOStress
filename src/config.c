@@ -24,12 +24,21 @@ const NameMap_t gPatternMap[] =
     {NULL, -1}
 };
 
+/* Canonical names come first (used for display); the old short names are kept
+ * after them as accepted aliases so existing configs/scripts still work. */
 const NameMap_t gWorkloadMap[] =
 {
-    {"seq_wrc",   WORKLOAD_SEQ_WRC},
-    {"seq_wrrc",  WORKLOAD_SEQ_WRRC},
-    {"seq_w1rcn", WORKLOAD_SEQ_W1RCN},
-    {"rand_wrc",  WORKLOAD_RAND_WRC},
+    {"seq-verify",     WORKLOAD_SEQ_WRC},
+    {"rand-verify",    WORKLOAD_RAND_WRC},
+    {"seq-verify-2x",  WORKLOAD_SEQ_WRRC},
+    {"retention",      WORKLOAD_SEQ_W1RCN},
+    {"concurrent-rw",  WORKLOAD_MIX_RW},
+    /* legacy aliases (still accepted, not shown as canonical) */
+    {"seq_wrc",        WORKLOAD_SEQ_WRC},
+    {"rand_wrc",       WORKLOAD_RAND_WRC},
+    {"seq_wrrc",       WORKLOAD_SEQ_WRRC},
+    {"seq_w1rcn",      WORKLOAD_SEQ_W1RCN},
+    {"mix_rw",         WORKLOAD_MIX_RW},
     {NULL, -1}
 };
 
@@ -61,6 +70,7 @@ void config_set_defaults(Config_t* cfg)
     cfg->io_size   = 64 * 1024;
     cfg->use_direct = 1;
     cfg->read_retries = 3;
+    cfg->rw_ratio  = 70;          /* mix_rw: 70% reads, 30% writes */
     cfg->nr_loop   = MAX_LOOP_NUM;
     cfg->sz_trunk  = MAX_TRUNK_SIZE;
     cfg->test_time = MAX_TEST_TIME;
@@ -95,6 +105,10 @@ int config_apply_kv(Config_t* cfg, const char* key, const char* val, const char*
     else if (strcmp(key, "read_retries") == 0)
     {
         cfg->read_retries = (U32)strtoul(val, NULL, 0);
+    }
+    else if (strcmp(key, "rw_ratio") == 0)
+    {
+        cfg->rw_ratio = (U32)strtoul(val, NULL, 0);
     }
     else if (strcmp(key, "continue_on_error") == 0)
     {
@@ -227,6 +241,7 @@ int parse_cli_options(int argc, char* argv[], Config_t* cfg)
         {"simple-progress", no_argument,    0, 8 },
         {"read-retries", required_argument, 0, 9 },
         {"continue-on-error", no_argument,  0, 10 },
+        {"rw-ratio",   required_argument, 0, 11 },
         {"loops",      required_argument, 0, 'l'},
         {"trunk-size", required_argument, 0, 'T'},
         {"test-time",  required_argument, 0, 'D'},
@@ -283,6 +298,7 @@ int parse_cli_options(int argc, char* argv[], Config_t* cfg)
             case  8 : cfg->simple_progress = 1; break;
             case  9 : cfg->read_retries = (U32)strtoul(optarg, NULL, 0); break;
             case 10 : cfg->continue_on_error = 1; break;
+            case 11 : cfg->rw_ratio = (U32)strtoul(optarg, NULL, 0); break;
             case 'l': cfg->nr_loop   = (U32)strtoul(optarg, NULL, 0); break;
             case 'T': cfg->sz_trunk  = (U64)strtoull(optarg, NULL, 0) * SIZE_1M; break;
             case 'D': if (parse_duration(optarg, &cfg->test_time)) { fprintf(stderr, "bad test-time: %s\n", optarg); exit(1); } break;
@@ -334,6 +350,11 @@ void config_validate(Config_t* cfg)
     if (cfg->test_time == 0)
     {
         fprintf(stderr, "test_time must be >= 1 second\n");
+        exit(1);
+    }
+    if (cfg->rw_ratio > 100)
+    {
+        fprintf(stderr, "rw-ratio must be in [0, 100] (got %u)\n", cfg->rw_ratio);
         exit(1);
     }
 }
