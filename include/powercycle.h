@@ -22,7 +22,10 @@ typedef struct
     int    plp;              /* --durability=plp                         */
     U64    flush_interval;   /* bytes between flush+checkpoint (volatile)  */
     U64    ckpt_interval;    /* bytes between durable-prefix journal persists (plp) */
-    U64    cut_after;        /* bytes written per cycle before a cut      */
+    U64    cut_after;        /* cut floor: bytes, or seconds if cut_after_is_time */
+    int    cut_after_is_time;/* 1 = cut_after is seconds, 0 = bytes */
+    U64    cut_jitter;       /* per-cycle seeded random extra (0 = fixed); bytes or seconds */
+    int    cut_jitter_is_time;/* 1 = cut_jitter is seconds, 0 = bytes */
     double graceful_ratio;   /* fraction of cuts that are graceful [0,1]  */
     U32    cycles;           /* number of power cycles (0 => infinite)    */
     char   journal[1024];    /* journal path                             */

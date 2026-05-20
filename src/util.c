@@ -222,3 +222,22 @@ int parse_duration(const char* s, U32* out)
     *out = (U32)((U64)v * mult);
     return 0;
 }
+
+int parse_amount(const char* s, U64* val, int* is_time)
+{
+    char last;
+    if (!s || !*s) return -1;
+    last = s[strlen(s) - 1];
+
+    /* lowercase time suffixes (note: 'M' stays bytes, only 'm' is minutes) */
+    if (last == 's' || last == 'm' || last == 'h' || last == 'd')
+    {
+        U32 secs;
+        if (parse_duration(s, &secs) == 0) { *val = secs; *is_time = 1; return 0; }
+    }
+    {
+        U64 bytes;
+        if (parse_size(s, &bytes) == 0) { *val = bytes; *is_time = 0; return 0; }
+    }
+    return -1;
+}

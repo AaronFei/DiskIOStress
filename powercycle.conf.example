@@ -31,7 +31,11 @@ flush_interval      = 16M    # volatile: flush + checkpoint cadence
 checkpoint_interval = 1M     # plp: completed-prefix journal-persist cadence
 
 # ---- Cycle control ----
-cut_after      = 64M    # bytes written per cycle before triggering a cut
+cut_after      = 64M    # FLOOR: min written per cycle before a cut may fire.
+                        # size (64M, 2G) OR duration (30s, 2m). lowercase m=minutes, M=MB.
+cut_jitter     = 0      # per-cycle seeded random extra on top of cut_after (0 = fixed).
+                        # size or duration; cut = cut_after + rand(0..cut_jitter), never shorter.
+                        # e.g. cut_after=30s + cut_jitter=256M = "write 30s, then 0-256MB more".
 graceful_ratio = 0.5    # fraction of cuts that are graceful (0..1)
 cycles         = 0      # number of power cycles (0 = infinite)
 

@@ -26,18 +26,51 @@ static void pc_sigstop(int s) { (void)s; g_stop = 1; }
 static int pc_call_hook(const PcOptions* o, const char* verb, const char* device, const Journal* j);
 
 /*===================================================
+| Cut trigger: WHEN to cut this cycle.
+|
+| Two stages, each measured in its own unit (bytes or seconds): first a `floor`
+| (= --cut-after) must be reached, then an additional seeded-random `extra`
+| (= 0..--cut-jitter) past the floor. So the cut never fires before the floor
+| (never "too short"), and lands at a per-cycle-varying but replayable point.
+===================================================*/
+typedef struct
+{
+    int floor_is_time;  unsigned long long floor_val;   /* cut-after: secs or bytes */
+    int extra_is_time;  unsigned long long extra_val;   /* this cycle's jitter draw  */
+    struct timeval t0;                                   /* write-phase start         */
+    int floor_done;                                      /* floor reached?            */
+    struct timeval floor_t;  unsigned long long floor_bytes;  /* baseline at floor    */
+} CutTrigger;
+
+static double pc_tv_since(struct timeval a, struct timeval b)
+{
+    return (b.tv_sec - a.tv_sec) + (b.tv_usec - a.tv_usec) / 1e6;
+}
+
+/* 1 if the cut should fire now, given total bytes written this cycle so far.
+ * Mutates *t to latch the floor baseline (single caller per cycle, no race). */
+static int cut_should_fire(CutTrigger* t, unsigned long long bytes)
+{
+    struct timeval now;
+    int floor_met;
+    gettimeofday(&now, NULL);
+    floor_met = t->floor_is_time ? (pc_tv_since(t->t0, now) >= (double)t->floor_val)
+                                 : (bytes >= t->floor_val);
+    if (!floor_met) return 0;
+    if (!t->floor_done) { t->floor_done = 1; t->floor_t = now; t->floor_bytes = bytes; }
+    if (t->extra_val == 0) return 1;
+    return t->extra_is_time ? (pc_tv_since(t->floor_t, now) >= (double)t->extra_val)
+                            : ((bytes - t->floor_bytes) >= t->extra_val);
+}
+
+/*===================================================
 | Concurrent power cut (ungraceful only).
 |
 | The IO pump (main thread) streams writes continuously without draining and
-| publishes how many bytes it has submitted. This cutter thread waits until that
-| reaches `cut_at_bytes`, then fires the power-cut hook *immediately* while the
+| publishes how many bytes it has submitted. This cutter thread polls the cut
+| trigger and fires the power-cut hook *immediately* when it trips, while the
 | pump keeps the queue full — so power physically drops with writes genuinely in
 | flight (a true mid-IO cut), not at a quiescent boundary.
-|
-| Reproducibility: the trigger (cut_at_bytes) is deterministic and the at-risk
-| set [durable_units, submitted_units) is journaled before issue, so the verdict
-| is replayable. Which sector the controller is mid-program on at the instant the
-| relay opens is physical and not host-controllable.
 ===================================================*/
 typedef struct
 {
@@ -45,7 +78,7 @@ typedef struct
     _Atomic int  cut_fired;     /* cutter -> pump: hook invoked, power dropping  */
     _Atomic int  cut_done;      /* cutter -> pump: hook returned (dry-run/sim)   */
     _Atomic int  pump_stopped;  /* pump -> cutter: pump exited, stop waiting     */
-    unsigned long long cut_at_bytes;
+    CutTrigger   trig;
     const PcOptions* o;
     const char*      device;
     const Journal*   j;
@@ -56,7 +89,7 @@ static void* pc_cutter_thread(void* arg)
 {
     Cutter* c = (Cutter*)arg;
     while (!atomic_load(&c->pump_stopped) && !g_stop &&
-           atomic_load(&c->submitted_bytes) < c->cut_at_bytes)
+           !cut_should_fire(&c->trig, atomic_load(&c->submitted_bytes)))
         usleep(200);                              /* fine-grained: catch it mid-stream */
     if (atomic_load(&c->pump_stopped) || g_stop)
         return NULL;                              /* interrupted before the trigger */
@@ -76,6 +109,9 @@ static void pc_defaults(PcOptions* o)
     o->flush_interval = 16 * 1024 * 1024ULL;
     o->ckpt_interval  = 1024 * 1024ULL;   /* plp durable-prefix persist cadence */
     o->cut_after      = 64 * 1024 * 1024ULL;
+    o->cut_after_is_time  = 0;
+    o->cut_jitter     = 0;        /* 0 = fixed cut point; >0 = seeded per-cycle spread */
+    o->cut_jitter_is_time = 0;
     o->graceful_ratio = 0.5;
     o->cycles         = 0;
     o->use_direct     = 1;
@@ -85,7 +121,7 @@ static void pc_defaults(PcOptions* o)
 enum {
     OPT_RANGES = 1000, OPT_REGIONS, OPT_REGION_SIZE, OPT_IO_SIZE, OPT_QD,
     OPT_ACCESS, OPT_DURABILITY, OPT_FLUSH_INTERVAL, OPT_CKPT_INTERVAL, OPT_CUT_AFTER,
-    OPT_GRACEFUL_RATIO, OPT_CYCLES, OPT_JOURNAL, OPT_POWER_HOOK,
+    OPT_CUT_JITTER, OPT_GRACEFUL_RATIO, OPT_CYCLES, OPT_JOURNAL, OPT_POWER_HOOK,
     OPT_DRY_RUN, OPT_NO_DIRECT, OPT_SEED, OPT_PATTERN, OPT_CONFIG
 };
 
@@ -117,7 +153,8 @@ static int pc_config_load(const char* path, PcOptions* o)
         else if (!strcmp(key, "durability"))     o->plp = (strcmp(val, "plp") == 0);
         else if (!strcmp(key, "flush_interval")) { U64 v; if (parse_size(val, &v)) errors++; else o->flush_interval = v; }
         else if (!strcmp(key, "checkpoint_interval")) { U64 v; if (parse_size(val, &v)) errors++; else o->ckpt_interval = v; }
-        else if (!strcmp(key, "cut_after"))      { U64 v; if (parse_size(val, &v)) errors++; else o->cut_after = v; }
+        else if (!strcmp(key, "cut_after"))      { if (parse_amount(val, &o->cut_after,  &o->cut_after_is_time))  errors++; }
+        else if (!strcmp(key, "cut_jitter"))     { if (parse_amount(val, &o->cut_jitter, &o->cut_jitter_is_time)) errors++; }
         else if (!strcmp(key, "graceful_ratio")) o->graceful_ratio = atof(val);
         else if (!strcmp(key, "cycles"))         o->cycles = (U32)strtoul(val, NULL, 0);
         else if (!strcmp(key, "journal"))        strncpy(o->journal, val, sizeof(o->journal) - 1);
@@ -146,6 +183,7 @@ static int pc_parse(int argc, char* argv[], PcOptions* o)
         {"flush-interval", required_argument, 0, OPT_FLUSH_INTERVAL},
         {"checkpoint-interval", required_argument, 0, OPT_CKPT_INTERVAL},
         {"cut-after",      required_argument, 0, OPT_CUT_AFTER},
+        {"cut-jitter",     required_argument, 0, OPT_CUT_JITTER},
         {"graceful-ratio", required_argument, 0, OPT_GRACEFUL_RATIO},
         {"cycles",         required_argument, 0, OPT_CYCLES},
         {"journal",        required_argument, 0, OPT_JOURNAL},
@@ -191,7 +229,8 @@ static int pc_parse(int argc, char* argv[], PcOptions* o)
             case OPT_DURABILITY:  o->plp = (strcmp(optarg, "plp") == 0); break;
             case OPT_FLUSH_INTERVAL: if (parse_size(optarg, &o->flush_interval)) rc = -1; break;
             case OPT_CKPT_INTERVAL:  if (parse_size(optarg, &o->ckpt_interval)) rc = -1; break;
-            case OPT_CUT_AFTER:   if (parse_size(optarg, &o->cut_after)) rc = -1; break;
+            case OPT_CUT_AFTER:   if (parse_amount(optarg, &o->cut_after,  &o->cut_after_is_time))  rc = -1; break;
+            case OPT_CUT_JITTER:  if (parse_amount(optarg, &o->cut_jitter, &o->cut_jitter_is_time)) rc = -1; break;
             case OPT_GRACEFUL_RATIO: o->graceful_ratio = atof(optarg); break;
             case OPT_CYCLES:      o->cycles = (U32)strtoul(optarg, NULL, 0); break;
             case OPT_JOURNAL:     strncpy(o->journal, optarg, sizeof(o->journal) - 1); break;
@@ -558,7 +597,6 @@ int pcwrite_cmd(char* device, int argc, char* argv[])
     Journal j;
     ThreadInfo_t ti;
     U32 blk, unit_blocks;
-    U64 units_per_cut;
 
     pc_defaults(&o);
     if (pc_parse(argc, argv, &o)) { fprintf(stderr, "pcwrite: bad options\n"); return 1; }
@@ -602,9 +640,6 @@ int pcwrite_cmd(char* device, int argc, char* argv[])
     signal(SIGINT,  pc_sigstop);
     signal(SIGTERM, pc_sigstop);
 
-    units_per_cut = o.cut_after / o.io_size;
-    if (units_per_cut == 0) units_per_cut = 1;
-
     printf("=== pcwrite ===\n");
     printf("  device=%s  blk=%u  cap=%llu sectors\n", device, blk, (unsigned long long)uring_capacity_blocks(e));
     printf("  ranges=%s  access=%s  durability=%s\n", j.ranges, j.access, j.durability);
@@ -612,12 +647,23 @@ int pcwrite_cmd(char* device, int argc, char* argv[])
     if (o.plp) printf("  PLP: durable=completion-prefix, checkpoint every %lluKB\n", (unsigned long long)(o.ckpt_interval / 1024));
     else       printf("  volatile: durable=flushed, flush every %lluKB\n", (unsigned long long)(o.flush_interval / 1024));
     printf("  journal=%s  power_hook=%s%s\n", o.journal, o.power_hook[0] ? o.power_hook : "(none)", o.dry_run ? "  [DRY-RUN]" : "");
+    {
+        char fb[32], jb[32];
+        if (o.cut_after_is_time) snprintf(fb, sizeof fb, "%llus", (unsigned long long)o.cut_after);
+        else                     snprintf(fb, sizeof fb, "%lluMB", (unsigned long long)(o.cut_after / (1024 * 1024)));
+        if (o.cut_jitter_is_time) snprintf(jb, sizeof jb, "%llus", (unsigned long long)o.cut_jitter);
+        else                      snprintf(jb, sizeof jb, "%lluMB", (unsigned long long)(o.cut_jitter / (1024 * 1024)));
+        printf("  cut: floor=%s + jitter=0..%s   graceful_ratio=%.2f\n", fb, jb, o.graceful_ratio);
+    }
 
     for (;;)
     {
         int graceful;
         PcReport rep;
         int pass;
+        U64 unit_bytes = (U64)unit_blocks * uring_block_size(e);
+        U64 cycle_bytes = 0;        /* bytes actually written this cycle (for the log) */
+        CutTrigger trig;
 
         /* rewind the at-risk window so it gets rewritten cleanly this cycle */
         j.submitted_units = j.durable_units;
@@ -625,12 +671,40 @@ int pcwrite_cmd(char* device, int argc, char* argv[])
 
         graceful = ((double)rand() / RAND_MAX) < o.graceful_ratio;
 
+        /* This cycle's cut trigger: floor = --cut-after, plus a seeded random
+         * [0, --cut-jitter] extra. Each part is bytes or seconds independently. */
+        memset(&trig, 0, sizeof(trig));
+        trig.floor_is_time = o.cut_after_is_time;  trig.floor_val = o.cut_after;
+        trig.extra_is_time = o.cut_jitter_is_time;
+        trig.extra_val     = o.cut_jitter ? ((U64)rand() % (o.cut_jitter + 1)) : 0;
+        gettimeofday(&trig.t0, NULL);
+
         if (graceful)
         {
-            /* write a chunk, DRAIN it, flush, then cut at a quiescent point so
-             * nothing should be lost. */
-            if (pc_write_phase(e, &rs, &j, &o, &ti, unit_blocks, units_per_cut, NULL))
-            { fprintf(stderr, "pcwrite: write phase error\n"); uring_close(e); return 1; }
+            /* write, DRAIN, flush, then cut at a quiescent point so nothing should
+             * be lost. Pure byte trigger -> one exact pass (precise + fast); if any
+             * part is time-based -> write in increments, checking the trigger. */
+            if (!trig.floor_is_time && !trig.extra_is_time)
+            {
+                U64 cut_units = (o.cut_after + trig.extra_val) / o.io_size;
+                if (cut_units == 0) cut_units = 1;
+                if (pc_write_phase(e, &rs, &j, &o, &ti, unit_blocks, cut_units, NULL))
+                { fprintf(stderr, "pcwrite: write phase error\n"); uring_close(e); return 1; }
+                cycle_bytes = cut_units * unit_bytes;
+            }
+            else
+            {
+                U64 chunk_units = o.flush_interval / unit_bytes;
+                U64 written_units = 0;
+                if (chunk_units == 0) chunk_units = 1;
+                while (!g_stop && !cut_should_fire(&trig, written_units * unit_bytes))
+                {
+                    if (pc_write_phase(e, &rs, &j, &o, &ti, unit_blocks, chunk_units, NULL))
+                    { fprintf(stderr, "pcwrite: write phase error\n"); uring_close(e); return 1; }
+                    written_units += chunk_units;
+                }
+                cycle_bytes = written_units * unit_bytes;
+            }
 
             if (!o.plp) uring_flush(e);
             j.durable_units = j.submitted_units;
@@ -641,14 +715,13 @@ int pcwrite_cmd(char* device, int argc, char* argv[])
         }
         else
         {
-            /* stream writes continuously; a cutter thread drops power mid-IO once
-             * cut_after bytes have been submitted (true in-flight cut). */
+            /* stream writes continuously; a cutter thread drops power mid-IO when
+             * the trigger trips (true in-flight cut). */
             Cutter c;
             pthread_t th;
-            U32 unit_bytes = unit_blocks * uring_block_size(e);
 
             memset(&c, 0, sizeof(c));
-            c.cut_at_bytes = units_per_cut * (unsigned long long)unit_bytes;
+            c.trig = trig;
             c.o = &o; c.device = device; c.j = &j;
 
             if (pthread_create(&th, NULL, pc_cutter_thread, &c))
@@ -666,6 +739,7 @@ int pcwrite_cmd(char* device, int argc, char* argv[])
             { printf("stop requested before cut\n"); break; }
             if (c.rc)
             { fprintf(stderr, "pcwrite: power hook (cut) failed\n"); uring_close(e); return 1; }
+            cycle_bytes = atomic_load(&c.submitted_bytes);
         }
 
         uring_close(e);
@@ -686,7 +760,9 @@ int pcwrite_cmd(char* device, int argc, char* argv[])
         { fprintf(stderr, "pcwrite: scan error\n"); uring_close(e); return 1; }
 
         pass = (rep.corrupt == 0 && rep.stale == 0);
-        printf("--- cycle %u (%s) ---\n", j.cycle, graceful ? "graceful" : "ungraceful");
+        printf("--- cycle %u (%s, wrote ~%lluMB) ---\n", j.cycle,
+               graceful ? "graceful" : "ungraceful",
+               (unsigned long long)(cycle_bytes / (1024 * 1024)));
         pc_report_print(&rep, blk, pass);
 
         if (!pass) { uring_close(e); return 2; }

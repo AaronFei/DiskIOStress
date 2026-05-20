@@ -69,8 +69,42 @@ static void test_str_trim_no_whitespace(void)
     TEST_ASSERT_EQUAL_STRING("intact", str_trim(s));
 }
 
+/* ---------- parse_amount (size vs duration auto-detect) ---------- */
+static void test_parse_amount_bytes(void)
+{
+    U64 v; int t;
+    TEST_ASSERT_EQUAL_INT(0, parse_amount("64M", &v, &t));
+    TEST_ASSERT_EQUAL_UINT64(64ULL * 1024 * 1024, v); TEST_ASSERT_EQUAL_INT(0, t);
+    TEST_ASSERT_EQUAL_INT(0, parse_amount("2G", &v, &t));
+    TEST_ASSERT_EQUAL_UINT64(2ULL * 1024 * 1024 * 1024, v); TEST_ASSERT_EQUAL_INT(0, t);
+    TEST_ASSERT_EQUAL_INT(0, parse_amount("4096", &v, &t));   /* bare number = bytes */
+    TEST_ASSERT_EQUAL_UINT64(4096, v); TEST_ASSERT_EQUAL_INT(0, t);
+}
+
+static void test_parse_amount_duration(void)
+{
+    U64 v; int t;
+    TEST_ASSERT_EQUAL_INT(0, parse_amount("30s", &v, &t));
+    TEST_ASSERT_EQUAL_UINT64(30, v); TEST_ASSERT_EQUAL_INT(1, t);
+    TEST_ASSERT_EQUAL_INT(0, parse_amount("2h", &v, &t));
+    TEST_ASSERT_EQUAL_UINT64(7200, v); TEST_ASSERT_EQUAL_INT(1, t);
+}
+
+static void test_parse_amount_m_vs_M(void)
+{
+    U64 v; int t;
+    /* lowercase m = minutes (time), uppercase M = megabytes (size) */
+    TEST_ASSERT_EQUAL_INT(0, parse_amount("5m", &v, &t));
+    TEST_ASSERT_EQUAL_UINT64(300, v); TEST_ASSERT_EQUAL_INT(1, t);
+    TEST_ASSERT_EQUAL_INT(0, parse_amount("5M", &v, &t));
+    TEST_ASSERT_EQUAL_UINT64(5ULL * 1024 * 1024, v); TEST_ASSERT_EQUAL_INT(0, t);
+}
+
 void register_util_tests(void)
 {
+    RUN_TEST(test_parse_amount_bytes);
+    RUN_TEST(test_parse_amount_duration);
+    RUN_TEST(test_parse_amount_m_vs_M);
     RUN_TEST(test_hex2dec_simple);
     RUN_TEST(test_hex2dec_uppercase);
     RUN_TEST(test_hex2dec_mixed_case);

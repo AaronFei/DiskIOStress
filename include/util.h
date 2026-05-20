@@ -27,4 +27,10 @@ int     parse_size(const char* s, U64* out);
 /* Parse "300" / "30s" / "5m" / "2h" / "1d" into seconds. 0 ok, -1 malformed. */
 int     parse_duration(const char* s, U32* out);
 
+/* Parse a value that may be a size (K/M/G/T -> bytes) OR a duration (s/m/h/d ->
+ * seconds), auto-detecting which. Disambiguation: lowercase 'm' = minutes,
+ * uppercase 'M' = megabytes; a bare number is bytes. On success sets *val and
+ * *is_time (1 = seconds, 0 = bytes) and returns 0; -1 on malformed input. */
+int     parse_amount(const char* s, U64* val, int* is_time);
+
 #endif /* DISKIOSTRESS_UTIL_H */
