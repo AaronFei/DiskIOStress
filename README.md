@@ -83,7 +83,7 @@ result (PASS/FAIL), duration, bytes written/read and average throughput:
 ========== Test Report ==========
   result    : PASS
   device    : /dev/sdb  (USB3 (5 Gbps) [USB 3.20])
-  workload  : rand_wrc   pattern: random   seed: 0x6A0D6480
+  workload  : rand-verify   pattern: random   seed: 0x6A0D6480
   duration  : 600 s
   passes    : 88 (generation)
   written   : 11.0 GB   (avg 240.5 MB/s)
@@ -110,6 +110,7 @@ Settings come from **CLI > config file > built-in defaults**:
 | `-D, --test-time=N`  | run for this long: `30s` / `10m` / `2h` / `1d` (checked promptly mid-pass) |
 | `-p, --pattern=NAME` | data pattern (see below)             |
 | `-w, --workload=NAME`| workload (see below)                 |
+| `--rw-ratio=N`       | `concurrent-rw` only: percent of ops that are reads (default 70) |
 | `-s, --seed=N`       | RNG seed (0 = derive from time)      |
 | `-y, --yes`          | skip the erase confirmation (CI/non-interactive); still refuses system drives |
 | `--simple-progress`  | single-line 5 s-average progress instead of the multi-line dashboard |
@@ -119,10 +120,61 @@ Settings come from **CLI > config file > built-in defaults**:
 > `--threads` / `--trunk-size` from the old multi-thread design are still
 > accepted but ignored; concurrency now comes from io_uring queue depth (`--qd`).
 
-**Workloads** (each loop = one generation; the tag's generation counter detects
-stale data): `seq_wrc` (write→verify, sequential), `seq_wrrc` (write→verify
-twice), `seq_w1rcn` (write once on loop 0, re-verify every later loop —
-retention), `rand_wrc` (random full-coverage order, default).
+**Workloads**
+
+There are two fundamentally different shapes. **Phase-separated** workloads write
+the *whole* range, then read the *whole* range back and compare — writes and reads
+never overlap. The **concurrent** workload mixes reads and writes at the same time.
+
+| Workload | Shape | Order | What each pass does |
+|----------|-------|-------|---------------------|
+| `seq-verify` | phase-separated | sequential | write the whole range, then read it all back and verify |
+| `rand-verify` | phase-separated | random | same as `seq-verify` but in scrambled visit order (**default**) |
+| `seq-verify-2x` | phase-separated | sequential | write once, then read the whole range back **twice** (catches read-disturb / unstable reads) |
+| `retention` | phase-separated | sequential | write **only on the first pass**, then re-verify every later pass — does the data survive over time without rewriting? |
+| `concurrent-rw` | concurrent | random | pre-seed once, then issue reads **and** writes simultaneously at `--rw-ratio` |
+
+> Old names (`seq_wrc`, `rand_wrc`, `seq_wrrc`, `seq_w1rcn`, `mix_rw`) are still
+> accepted as aliases.
+
+Each detailed:
+
+- **`seq-verify`** — the simplest cycle. Pass *N* writes the whole range with
+  generation-*N* tags in ascending LBA order, then reads it all back and checks
+  every sector's tag. Next pass rewrites at generation *N+1*. The generation
+  counter is how stale data (a sector that kept an older generation) is caught.
+- **`rand-verify`** *(default)* — identical to `seq-verify` except the visit
+  order is scrambled. It still writes the **whole** range every pass — a
+  full-coverage Feistel permutation visits every sector exactly once (no gaps, no
+  repeats) — but jumps around instead of going `0,1,2,…`. The order is a pure
+  function of `(position, generation, seed)` (no `rand()`), so the **same seed
+  replays the exact same order** and each generation uses a different but
+  deterministic order. Use this to exercise the FTL / mapping table, not just
+  streaming.
+- **`seq-verify-2x`** — like `seq-verify` but reads the range back **twice** per
+  pass. The second read catches sectors that read correctly once but not on a
+  repeated read (read-disturb, marginal cells, unstable reads).
+- **`retention`** — writes the range **once** (first pass only), then every later
+  pass just re-reads and verifies without rewriting. Combined with `--test-time`
+  this answers "does the written data still read back correctly hours/days
+  later?" (data retention / bit-rot), as opposed to constantly refreshing it.
+- **`concurrent-rw`** — the only workload where reads and writes happen *at the
+  same time*. It first pre-seeds the whole range once (so reads always hit valid
+  data), then issues a stream of reads and writes together on one queue.
+  `--rw-ratio=N` sets the percentage that are reads (default 70). Reads
+  scrub-verify (magic / LBA / CRC) whatever is currently on the media — valid for
+  **any** generation, so a concurrent overwrite is never a false failure; only
+  torn writes / bit-rot / misdirection fail. A read and a write are never issued
+  to the same LBA at once (O_DIRECT overlap has no atomicity guarantee). The op
+  type and position are seed-deterministic, so the access pattern is
+  reproducible. This stresses integrity *under* read/write contention — something
+  the phase-separated workloads cannot do. It has no natural "pass" end, so bound
+  it with `--test-time`.
+
+```
+sudo ./build/DiskIOStress --workload=concurrent-rw --rw-ratio=70 \
+     --io-size=64K --qd=64 --test-time=10m /dev/sdb
+```
 
 > **Verify is always on** in stress mode — every workload writes then reads back
 > and compares the per-sector tags. To verify *previously written* data without
@@ -189,6 +241,23 @@ Verifies data integrity across **frequent power cycles**. A single thread keeps
 many commands in flight via io_uring + `O_DIRECT` (block layer → works on NVMe,
 SATA and USB alike). `pcwrite` runs the whole loop; `pcscan` is a one-shot verify.
 
+### Power-cycle vs. stress workloads — two different things
+
+This mode is **separate from the `--workload` stress test** (Mode 1). They share
+the per-sector tag scheme and the io_uring engine, but answer different questions:
+
+| | **Stress workloads** (Mode 1) | **Power-cycle** (Mode 3) |
+|---|---|---|
+| Command | `DiskIOStress <dev> [opts]` | `DiskIOStress <dev> pcwrite …` |
+| Question | does data written then read back match, under various access patterns? | does data the host considered **durable survive a power loss**? |
+| Failure domain | normal-operation integrity | crash consistency (flush/FUA honoured? PLP works? torn writes?) |
+| Access selected by | `--workload=` (`seq-verify` … `concurrent-rw`) | `--access=seq\|random` (**`--workload` is ignored here**) |
+| Needs | just the device | a power-control hook (or `--power-hook-dry-run`) |
+
+So `graceful` / `ungraceful` are **not** workloads — they are the two *shutdown
+styles* this mode alternates between. Picking `concurrent-rw` etc. has no effect on
+`pcwrite`.
+
 ```
 sudo ./build/DiskIOStress /dev/sdb pcwrite \
      --ranges=0-1G --access=random --io-size=64K --qd=32 \
@@ -204,7 +273,35 @@ write tagged data (QD-deep)  →  call power-hook "cut-graceful"/"cut-ungraceful
    →  call power-hook "restore"  →  wait for the device  →  pcscan verify  →  repeat
 ```
 
-**When the cut happens (graceful vs ungraceful):**
+**What triggers a cut — and which kind:** two independent knobs.
+
+1. ***When* to cut** — `--cut-after` (default `64M`) sets the **floor** and
+   `--cut-jitter` (default `0`) adds a per-cycle seeded-random amount on top, so each
+   cycle's cut = `cut_after + rand(0..cut_jitter)`. The cut **never falls below
+   `cut_after`** (never "too short"). The jitter draw comes from the seeded RNG, so
+   the same `--seed` reproduces the same per-cycle sizes. Each new cycle resumes
+   writing from the last durable point, so the cut position advances over cycles.
+
+   Each of the two can be a **size** (`64M`, `2G`) **or a duration** (`30s`, `2m`) —
+   auto-detected (note: lowercase `m` = minutes, uppercase `M` = megabytes). The cut
+   is two-stage: reach the `cut_after` floor, then go an extra `0..cut_jitter` past
+   it, each measured in its own unit. So `--cut-after=30s --cut-jitter=256M` means
+   *"write for at least 30 s, then a random 0–256 MB more, then cut."*
+   - A pure **size + size** trigger is exact and **byte-identical** reproducible.
+     Any **time** part makes the exact byte count vary run-to-run (it depends on
+     device speed) — the verdict is still correct (the journal records the actual
+     at-risk window), just not byte-identical.
+   - **graceful**: the threshold is measured on *drained* writes, then it cuts at a
+     quiescent point. **ungraceful**: a cutter thread fires the instant the trigger
+     trips on *submitted* (still-in-flight) bytes.
+   - The bytes actually written each cycle are printed: `--- cycle 3 (graceful, wrote ~187MB) ---`.
+2. ***Which kind* of cut** — `--graceful-ratio=<0..1>` (default `0.5`). At the start
+   of each cycle a seeded RNG picks the style: `graceful = rand() < graceful_ratio`.
+   So `0.5` ≈ half graceful / half ungraceful, interleaved randomly but — because the
+   RNG is seeded from `--seed` — **replayable**. `0` = always ungraceful, `1` = always
+   graceful.
+
+**How the two cut styles behave:**
 
 - **graceful** — write `--cut-after` bytes, **drain and flush** every write, advance
   the durable point to cover everything, *then* cut. The cut lands at a quiescent
@@ -236,17 +333,19 @@ same `acceptable` count.)
 | `--durability=volatile\|plp` | durability model the test asserts (see below) |
 | `--flush-interval=` | (volatile) flush + checkpoint cadence |
 | `--checkpoint-interval=` | (plp) **bytes** of completed writes between durable-point journal persists (default 1M) |
-| `--cut-after=` | bytes written per cycle before a cut |
-| `--graceful-ratio=` | fraction of cuts that are graceful (0..1) |
+| `--cut-after=` | **trigger floor:** min written per cycle before the cut may fire. **Size** (`64M`, default) **or duration** (`30s`) |
+| `--cut-jitter=` | per-cycle seeded random extra on top of `--cut-after` (default 0 = fixed). Size or duration; cut = `cut_after + rand(0..jitter)`, never shorter, replayable |
+| `--graceful-ratio=` | fraction of cuts that are graceful vs ungraceful, `0..1` (default 0.5; seeded → reproducible) |
 | `--cycles=N` | number of cycles (0 = infinite) |
 | `--power-hook=` | your power-control script (see `power-hook.example.sh`) |
 | `--power-hook-dry-run` | run the loop without actually cutting power |
 | `--no-direct` | disable `O_DIRECT` (e.g. testing on a regular file) |
 
 > Size-valued options (`--io-size`, `--region-size`, `--flush-interval`,
-> `--checkpoint-interval`, `--cut-after`, and the `--ranges` bounds) take a **byte
-> count** with an optional `K`/`M`/`G`/`T` suffix (1024-based) or `0x` hex — e.g.
-> `1M`, `262144`, `0x40000`.
+> `--checkpoint-interval`, and the `--ranges` bounds) take a **byte count** with an
+> optional `K`/`M`/`G`/`T` suffix (1024-based) or `0x` hex — e.g. `1M`, `262144`,
+> `0x40000`. `--cut-after` and `--cut-jitter` additionally accept a **duration**
+> (`s`/`m`/`h`/`d`, e.g. `30s`, `2m`); a bare number or `K/M/G/T` is bytes.
 
 ### How verification works
 

@@ -152,8 +152,29 @@
   <h2>5. 模式 1：壓力測試</h2>
   <pre><code>sudo ./build/DiskIOStress /dev/sdb
 sudo ./build/DiskIOStress --qd=64 --io-size=128K --pattern=addr --ranges=0-4G /dev/nvme0n1</code></pre>
-  <p><strong>單執行緒 io_uring + O_DIRECT</strong>(block 層,通吃 NVMe/SATA/USB)持續 write→read→verify,每個 loop 一個 generation。並發來自 io_uring 的 queue depth(<code>--qd</code>),不再開多執行緒。Workload:<code>seq_wrc</code> / <code>seq_wrrc</code> / <code>seq_w1rcn</code>(retention)/ <code>rand_wrc</code>(預設,Feistel 全覆蓋隨機)。Pattern 多 12 種含新的 <code>addr</code>(自我描述,好 debug)。</p>
+  <p><strong>單執行緒 io_uring + O_DIRECT</strong>(block 層,通吃 NVMe/SATA/USB)。並發來自 io_uring 的 queue depth(<code>--qd</code>),不再開多執行緒。Pattern 多 12 種含新的 <code>addr</code>(自我描述,好 debug)。Workload 用 <code>--workload=</code> 指定,見下表。</p>
   <div class="callout warn"><code>--threads</code> / <code>--trunk-size</code> 仍可接受但已忽略(並發改由 <code>--qd</code> 控制)。改 block 層後壓測模式不再測 NVMe stream write-hint。</div>
+
+  <h3>5.1 Workload 差異</h3>
+  <p>分兩大類:<strong>相位分離</strong>(整段全寫 → 整段全讀回比對,讀寫<em>不重疊</em>)與<strong>併發</strong>(讀寫<em>同時</em>進行)。</p>
+  <table>
+    <thead><tr><th>Workload</th><th>類型</th><th>順序</th><th>每一輪做什麼</th></tr></thead>
+    <tbody>
+      <tr><td><code>seq-verify</code></td><td>相位分離</td><td>順序</td><td>整段寫 → 整段讀回驗證</td></tr>
+      <tr><td><code>rand-verify</code> <span class="badge b-ok">預設</span></td><td>相位分離</td><td>亂序</td><td>同 seq-verify,但拜訪順序打散(全覆蓋)</td></tr>
+      <tr><td><code>seq-verify-2x</code></td><td>相位分離</td><td>順序</td><td>寫一次 → 整段讀回驗證<strong>兩次</strong>(抓 read-disturb / 不穩定讀)</td></tr>
+      <tr><td><code>retention</code></td><td>相位分離</td><td>順序</td><td><strong>只在第一輪寫</strong>,之後每輪只重讀驗證(保存力 / bit-rot)</td></tr>
+      <tr><td><code>concurrent-rw</code> <span class="badge b-warn">新</span></td><td>併發</td><td>亂序</td><td>先 pre-seed 一次,然後<strong>同時</strong>讀+寫,比例由 <code>--rw-ratio</code> 控制</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li><strong><code>seq-verify</code></strong>:最基本。第 N 輪用 generation-N 的 tag 整段寫入,再整段讀回逐 sector 比對;下一輪改 N+1。靠 generation 計數抓「停留在舊版本」的 stale 資料。</li>
+    <li><strong><code>rand-verify</code>(預設)</strong>:跟 seq-verify 一樣<em>每輪寫滿整段</em>,只是順序被打散 —— Feistel 全覆蓋排列,每個 sector 剛好一次(不漏不重),但跳著走而非 0,1,2…。順序是 <code>(位置, generation, seed)</code> 的純函數(無 <code>rand()</code>),<strong>同 seed 完美重播</strong>,每輪換一套確定順序。用來操 FTL / mapping table。</li>
+    <li><strong><code>seq-verify-2x</code></strong>:同 seq-verify 但每輪讀回<strong>兩次</strong>。第二次讀抓「讀一次對、重複讀就錯」的 cell(read-disturb、邊界 cell)。</li>
+    <li><strong><code>retention</code></strong>:整段<strong>只寫一次</strong>(第一輪),之後每輪只重讀驗證、不重寫。配 <code>--test-time</code> 回答「寫進去的資料過幾小時/幾天還讀得對嗎」(資料保存力)。</li>
+    <li><strong><code>concurrent-rw</code></strong>:唯一讀寫<em>同時</em>的 workload。先 pre-seed 整段(讓讀一定打到有效資料),再在同一條 queue 上同時丟讀和寫。<code>--rw-ratio=N</code> 設讀的百分比(預設 70)。讀用 scrub 驗證(magic/LBA/CRC,<strong>任何 generation 都算對</strong>),所以併發中被蓋寫不會誤判,只有 torn write / bit-rot / misdirection 才 fail;讀和寫不會同時打同一 LBA(O_DIRECT 重疊無原子性保證)。op 類型與位置都 seed-deterministic,可重現。測「讀寫競爭下」的完整性 —— 相位分離 workload 做不到。沒有自然的「一輪」結束點,用 <code>--test-time</code> 限時。</li>
+  </ul>
+  <div class="callout">舊名 <code>seq_wrc</code> / <code>rand_wrc</code> / <code>seq_wrrc</code> / <code>seq_w1rcn</code> / <code>mix_rw</code> 仍可當 alias 使用。</div>
 </section>
 
 <!-- =============================== -->
@@ -174,6 +195,18 @@ sudo ./build/DiskIOStress --qd=64 --io-size=128K --pattern=addr --ranges=0-4G /d
 # 或把整組設定寫進 INI:
 sudo ./build/DiskIOStress /dev/sdb pcwrite --config=powercycle.conf.example</code></pre>
 
+  <div class="callout"><strong>跟模式 1 的 workload 是兩件事。</strong> 共用 sector tag 與 io_uring 引擎,但問的問題不同 —— workload 測「正常讀寫資料對不對」,power-cycle 測「斷電後 host 認定已落地的資料還在不在」。<code>graceful</code>/<code>ungraceful</code> <em>不是</em> workload,是這個模式的兩種<em>關機方式</em>;這裡<strong>不看 <code>--workload</code></strong>,存取樣式改用 <code>--access=seq|random</code>。</div>
+  <table>
+    <thead><tr><th></th><th>壓測 workload(模式 1)</th><th>Power-cycle(模式 3)</th></tr></thead>
+    <tbody>
+      <tr><td>指令</td><td><code>DiskIOStress &lt;dev&gt; [opts]</code></td><td><code>DiskIOStress &lt;dev&gt; pcwrite …</code></td></tr>
+      <tr><td>測什麼</td><td>正常操作下資料正確性</td><td>斷電後 durable 資料是否存活</td></tr>
+      <tr><td>失敗領域</td><td>一般完整性</td><td>crash consistency(flush/FUA、PLP、torn write)</td></tr>
+      <tr><td>存取樣式</td><td><code>--workload=</code></td><td><code>--access=seq|random</code>(忽略 <code>--workload</code>)</td></tr>
+      <tr><td>需要</td><td>裝置即可</td><td>切電 hook(或 <code>--power-hook-dry-run</code>)</td></tr>
+    </tbody>
+  </table>
+
   <h3>7.1 一個 cycle 的流程</h3>
   <div class="flow">寫帶 tag 的資料 (QD 深)
    │  (依 ranges × access 走 unit,每寫一輪 generation +1)
@@ -186,7 +219,22 @@ pcscan 讀回全範圍 → 逐 unit 分類 → PASS / FAIL
    ▼
 loop(下一個 cycle)</div>
 
-  <h3>7.2 generation + journal 判定模型</h3>
+  <h3>7.2 斷電的 trigger:何時斷、斷哪種</h3>
+  <p>兩個獨立的旋鈕:</p>
+  <table>
+    <thead><tr><th>旋鈕</th><th>控制</th><th>行為</th></tr></thead>
+    <tbody>
+      <tr><td><code>--cut-after</code><br>(預設 64M,<strong>下限</strong>)<br><code>--cut-jitter</code><br>(預設 0)</td><td><strong>何時斷</strong></td><td>每個 cycle 斷點 = <code>cut_after + rand(0..jitter)</code>,<strong>不會低於 cut_after</strong>(不會太短),random 取自 seeded RNG → 同 seed 重播。兩者各自可填 <strong>size</strong>(<code>64M</code>)<strong>或時間</strong>(<code>30s</code>;小寫 <code>m</code>=分鐘、大寫 <code>M</code>=MB)。兩段式:先到 <code>cut_after</code> floor,再多跑 <code>0..cut_jitter</code>,各用自己的單位 —— 例 <code>--cut-after=30s --cut-jitter=256M</code> = 「寫滿30秒,再多寫隨機0–256MB才斷」。純 size+size 為 byte-identical 可重播;含時間則 byte 數逐次略變(判定仍正確)。每 cycle 實際寫入量印在 log:<code>--- cycle 3 (graceful, wrote ~187MB) ---</code>。</td></tr>
+      <tr><td><code>--graceful-ratio=&lt;0..1&gt;</code><br>(預設 0.5)</td><td><strong>斷哪種</strong></td><td>每個 cycle 開頭用 seeded RNG 擲一次:<code>graceful = rand() &lt; ratio</code>。0.5 ≈ 一半 graceful 一半 ungraceful,隨機交錯但因 seed 固定<strong>可重播</strong>;0=全 ungraceful、1=全 graceful。</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li><strong>graceful</strong>:寫滿 <code>cut-after</code> → <strong>drain + flush + 把 durable 推到 submitted</strong> → 在沒有 in-flight IO 的靜止點斷。at-risk window 空 → 所有資料都必須存活(<code>acceptable=0</code>)。模擬正常關機。</li>
+    <li><strong>ungraceful</strong>:一個 <strong>cutter thread</strong> 在主執行緒<em>還在持續灌 IO</em> 時、submitted byte 一達 <code>cut-after</code> 就立刻觸發斷電 hook,電源在 ~qd 筆寫入<strong>真正 in-flight</strong> 時掉下去(真·IO 中斷電)。at-risk window <code>[durable, submitted)</code> 的 in-flight 遺失算 acceptable,但 <code>[0, durable)</code> 掉了就是 stale=FAIL。模擬突然拔電。</li>
+  </ul>
+  <div class="callout">可重現性:trigger(<code>cut-after</code>)與「哪種」(seeded <code>graceful-ratio</code>)都是確定的,at-risk 區間在發 IO <em>前</em> 就寫進 journal,所以判定可完全重播。唯一不可控的是 relay 打開那一瞬間 controller 正在 program 哪個 sector(物理層)。</div>
+
+  <h3>7.3 generation + journal 判定模型</h3>
   <p>一個 <strong>pass</strong> 把 range 內每個 unit 恰好重寫一次(循序,或 Feistel 全覆蓋隨機),然後 generation 進位 —— 所以同一區同時最多只有兩個世代(G 與 G-1)。host 端 <strong>journal</strong>(atomic 寫、放在受測碟之外,才能撐過斷電)記錄世代與 pass 的 durable 進度:</p>
   <div class="flow">pos &lt; durable_units              → 必須是世代 G   (已 durable,必須存活)
 durable_units ≤ pos &lt; submitted  → at-risk 窗口   (G 或 G-1 都可接受)
