@@ -1,0 +1,42 @@
+# =============================================================================
+# DiskIOStress power-cycle config (INI / key=value), for pcwrite / pcscan.
+#
+# Usage:
+#     sudo ./build/DiskIOStress /dev/sdb pcwrite --config=powercycle.conf
+#
+# Precedence (high -> low):  CLI options  >  this file  >  built-in defaults.
+# Lines starting with '#' or ';' are comments. Sizes accept K/M/G/T or 0x hex.
+# =============================================================================
+
+# ---- Region / access pattern ----
+# ranges: "whole" or explicit byte ranges, e.g. "0-1G,4G-5G".
+ranges = 0-1G
+# Or carve N equally-spaced regions of region_size each (overrides 'ranges'):
+# regions      = 8
+# region_size  = 64M
+
+# access: seq (sequential cyclic) | random (full-coverage permutation per pass)
+access = random
+
+# ---- IO ----
+io_size = 64K        # write unit size
+qd      = 32         # io_uring queue depth held by the single thread
+direct  = 1          # 1 = O_DIRECT (required on real devices), 0 = buffered
+
+# ---- Durability model the test asserts ----
+# volatile : only flushed data is durable (window = flush_interval)
+# plp      : every completed write must survive (window = checkpoint_interval)
+durability          = plp
+flush_interval      = 16M    # volatile: flush + checkpoint cadence
+checkpoint_interval = 1M     # plp: completed-prefix journal-persist cadence
+
+# ---- Cycle control ----
+cut_after      = 64M    # bytes written per cycle before triggering a cut
+graceful_ratio = 0.5    # fraction of cuts that are graceful (0..1)
+cycles         = 0      # number of power cycles (0 = infinite)
+
+# ---- Plumbing ----
+power_hook = ./power-hook.usb-sim.sh   # your power-control script
+# journal  = /var/lib/diskiostress/sdb.journal   # default: /tmp/diskiostress-<dev>.journal
+pattern    = addr      # random | addr (self-describing) | zero | one | inc_dword | ...
+seed       = 0         # 0 = derive from time() and log it

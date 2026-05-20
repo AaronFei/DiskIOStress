@@ -1,0 +1,81 @@
+# =============================================================================
+# DiskIOStress configuration file (INI / key=value)
+# -----------------------------------------------------------------------------
+# Usage:
+#     sudo ./DiskIOStress --config=DiskIOStress.conf /dev/nvme0n1
+#
+# Precedence (high -> low):
+#     CLI options  >  config file  >  built-in defaults
+#
+# All keys are optional. Missing keys fall back to defaults shown below.
+# Lines starting with '#' or ';' are comments. Both `key = value` and
+# `key=value` work. Numeric values may be decimal (10) or hex (0x0A).
+# =============================================================================
+
+# ---- Concurrency (single-thread io_uring) ----
+# Queue depth held by the one submission thread (1..1024). This replaces the
+# old per-thread model: concurrency now comes from io_uring queue depth.
+qd = 32
+
+# ---- IO sizing ----
+# IO unit size in bytes (K/M/G suffix ok). Each write/read covers one unit.
+io_size = 64K
+
+# LBA ranges to test. "whole" = the whole device; or explicit byte ranges,
+# e.g. "0-1G,4G-5G". Useful to limit a run on a huge device.
+ranges = whole
+
+# Use O_DIRECT (1) or buffered IO (0). O_DIRECT is required on real devices.
+direct = 1
+
+# ---- Loop / Duration ----
+# Number of write/verify passes before finishing.
+loops = 10000000
+
+# Maximum test time in seconds. Whichever finishes first wins.
+# 604800 = 7 days  /  86400 = 1 day  /  3600 = 1 hour
+test_time = 604800
+
+# ---- Data pattern ----
+# The byte pattern written to each buffer before the read-back compare.
+# Pick the one that best stresses the failure mode you are hunting:
+#
+#   zero          All bytes 0x00. Cheapest; good for detecting stuck-at-1 cells.
+#   one           All bytes 0xFF. Detects stuck-at-0 cells.
+#   working_one   "Walking 1": 32 dwords where dword[i] = (1 << i), tiled to fill.
+#                 Each bit position is toggled in isolation -> finds shorts /
+#                 coupling between adjacent data lines.
+#   working_zero  "Walking 0": dword[i] = ~(1 << i). Inverse of working_one.
+#   inc_byte      Per-byte ramp:  byte[i]  = i & 0xFF.
+#   dec_byte      Per-byte ramp down: byte[i] = (0xFF - i) & 0xFF.
+#   inc_word      Per-16bit ramp: word[i]  = i & 0xFFFF.
+#   dec_word      Per-16bit ramp down.
+#   inc_dword     Per-32bit ramp: dword[i] = i. Address-like data; makes it easy
+#                 to spot mis-ordered / shifted sectors in a hex dump.
+#   dec_dword     Per-32bit ramp down.
+#   random        (default) pseudo-random bytes. Most realistic.
+#   addr          Self-describing: payload repeats [LBA|offset|generation] every
+#                 16 bytes, so any fragment locates itself in a hexdump. Best for
+#                 debugging torn writes / misdirection / intra-sector shifts.
+#
+# NOTE: when data tagging is enabled (default), the first 32 bytes of every
+# sector hold a structured tag (magic / seed / LBA / write-loop / thread id /
+# trunk / pattern / workload / payload-CRC), so the chosen pattern only fills
+# the bytes after the header. On read-back the tag is parsed and each field is
+# checked, which classifies failures precisely: misdirected IO (LBA), stale
+# data (write-loop), cross-run leftovers (seed), or bit-rot (payload CRC).
+pattern = random
+
+# ---- Workload ----
+# One of:
+#   seq_wrc      Sequential Write / Read / Compare
+#   seq_wrrc     Sequential Write + Repeat-Read-Last-10-Trunks Compare
+#   seq_w1rcn    Write once, then Read N times across loops
+#   rand_wrc     Random Write/Read/Compare (default)
+workload = rand_wrc
+
+# ---- Random seed ----
+# 0 means "use current time() and print the chosen seed at startup".
+# To reproduce a failed run, copy the seed printed in log.txt / stdout here.
+# Example: seed = 0xDEADBEEF   or   seed = 3735928559
+seed = 0
