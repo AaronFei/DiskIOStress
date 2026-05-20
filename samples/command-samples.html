@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>DiskIOStress — 指令範例</title>
+<style>
+  :root{--bg:#0f1419;--panel:#1a1f29;--panel2:#232a36;--text:#e6e6e6;--muted:#9aa3b2;
+    --accent:#4fc3f7;--accent2:#ffb74d;--ok:#81c784;--bad:#e57373;--warn:#fff176;--border:#2c3441;--code:#0b0e13;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+  header{background:linear-gradient(135deg,#1e3a5f,#0f1419);padding:30px 44px;border-bottom:1px solid var(--border)}
+  header h1{margin:0 0 6px;font-size:25px;color:#fff}
+  header .meta{color:var(--muted);font-size:14px}
+  .container{max-width:1080px;margin:0 auto;padding:28px 44px 80px}
+  nav.toc{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px 24px;margin-bottom:30px}
+  nav.toc a{color:var(--accent);text-decoration:none;margin-right:18px;font-size:14px}
+  nav.toc a:hover{text-decoration:underline}
+  section{margin-bottom:38px}
+  h2{font-size:20px;color:var(--accent);border-left:4px solid var(--accent);padding-left:11px;margin:0 0 8px}
+  h3{font-size:15px;color:var(--accent2);margin:20px 0 6px}
+  p{margin:6px 0;color:#cfd8dc;font-size:14px}
+  code{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:.9em;background:var(--code);padding:2px 6px;border-radius:4px;color:#f0c674}
+  pre{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:13px 16px;overflow-x:auto;font-size:13px;line-height:1.55;margin:8px 0}
+  pre code{background:transparent;padding:0;color:#d4d4d4}
+  .cmt{color:#6a9955}
+  .callout{background:rgba(255,183,77,.07);border-left:3px solid var(--accent2);padding:11px 16px;border-radius:4px;margin:10px 0;color:#e8d9bf;font-size:14px}
+  .callout.bad{background:rgba(229,115,115,.08);border-color:var(--bad);color:#f0c9c9}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+  th,td{padding:7px 11px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--accent2)}
+  footer{text-align:center;color:var(--muted);font-size:13px;padding:22px;border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+<header>
+  <h1>DiskIOStress — 指令範例</h1>
+  <div class="meta">各種測試的下法(CLI 直打 與 設定檔)· 把 <code>/dev/sdX</code> 換成你的目標裝置</div>
+</header>
+<div class="container">
+
+<nav class="toc">
+  <a href="#note">注意事項</a>
+  <a href="#stress">壓力測試(無斷電)</a>
+  <a href="#single">單一指令</a>
+  <a href="#power">Power-cycle(斷電)</a>
+  <a href="#conf">用設定檔</a>
+</nav>
+
+<div class="callout bad" id="note">
+  <strong>⚠️ 所有寫入都會徹底破壞目標裝置上的資料。</strong> 下指令前務必確認 <code>/dev/sdX</code> 是正確的受測碟(<code>lsblk -o NAME,TRAN,SIZE,MODEL</code> 確認)。對 <code>/dev/sda</code> 會額外問 (y/n)。寫真實 block device 需要 <code>sudo</code> 與 root(O_DIRECT)。
+</div>
+
+<!-- ===================== STRESS ===================== -->
+<section id="stress">
+  <h2>1. 壓力測試(無斷電)</h2>
+  <p>單執行緒 io_uring + O_DIRECT,write → read → verify。通吃 NVMe / SATA / USB。並發由 <code>--qd</code> 控制。</p>
+
+  <h3>基礎 sequential 讀寫驗證</h3>
+  <pre><code>sudo ./build/DiskIOStress --workload=seq_wrc --io-size=64K --qd=32 /dev/sdX</code></pre>
+
+  <h3>基礎 random 讀寫驗證</h3>
+  <pre><code>sudo ./build/DiskIOStress --workload=rand_wrc --io-size=64K --qd=32 /dev/sdX</code></pre>
+
+  <h3>讀寫 mix(寫一輪、重讀驗證兩次)</h3>
+  <pre><code>sudo ./build/DiskIOStress --workload=seq_wrrc --io-size=64K --qd=32 /dev/sdX</code></pre>
+
+  <h3>4 KiB 對齊 / 非對齊 / 混合(<code>--align</code> + <code>--align-mode</code>)</h3>
+  <pre><code><span class="cmt"># 每道 command 都 4K 對齊</span>
+sudo ./build/DiskIOStress --io-size=4K --align=4K --align-mode=aligned   --qd=64 --pattern=addr /dev/sdX
+<span class="cmt"># 每道 command 都偏移 1 個 sector(跨 4K 邊界,測 RMW)</span>
+sudo ./build/DiskIOStress --io-size=4K --align=4K --align-mode=unaligned --qd=64 --pattern=addr /dev/sdX
+<span class="cmt"># 同一輪混合對齊/非對齊(deterministic,verify 不會誤判)</span>
+sudo ./build/DiskIOStress --io-size=4K --align=4K --align-mode=mixed     --qd=64 --pattern=addr /dev/sdX</code></pre>
+  <p>每道 command 放進一個 <code>align</code> 大小的 slot(留間距,offset 的 command 不會跟鄰居重疊)。unaligned 預設偏移 1 個 sector(仍 512-aligned,O_DIRECT OK)。</p>
+  <h3>控制 unaligned 的偏移量(<code>--align-offset</code>)</h3>
+  <pre><code><span class="cmt"># 固定偏移 2K(每道 command 從 4K 邊界 +2048 起)</span>
+sudo ./build/DiskIOStress --io-size=4K --align=4K --align-mode=unaligned --align-offset=2K /dev/sdX
+<span class="cmt"># 每道 command 隨機偏移(deterministic by seed,可重現)</span>
+sudo ./build/DiskIOStress --io-size=4K --align=4K --align-mode=unaligned --align-offset=random --seed=0x1234 /dev/sdX</code></pre>
+
+  <h3>大 command(1 MiB transfer)</h3>
+  <pre><code>sudo ./build/DiskIOStress --workload=seq_wrc --io-size=1M --qd=16 /dev/sdX</code></pre>
+
+  <h3>Trim mixed(寫/驗證後 trim,下一輪重寫)</h3>
+  <pre><code>sudo ./build/DiskIOStress --workload=rand_wrc --io-size=64K --qd=32 --trim /dev/sdX</code></pre>
+
+  <h3>限定範圍 / 限時 / 指定 seed(可重現)</h3>
+  <pre><code>sudo ./build/DiskIOStress --ranges=0-16G --test-time=600 --seed=0xABCD /dev/sdX</code></pre>
+
+  <p>常用旗標:<code>--qd</code> <code>--io-size</code> <code>--ranges</code> <code>--workload</code>(seq_wrc/seq_wrrc/seq_w1rcn/rand_wrc)<code>--pattern</code>(random/addr/zero/one/inc_dword…)<code>--loops</code> <code>--test-time</code> <code>--seed</code> <code>--trim</code> <code>--no-direct</code>。</p>
+</section>
+
+<!-- ===================== SINGLE ===================== -->
+<section id="single">
+  <h2>2. 單一指令(一次性,參數為 16 進位)</h2>
+  <p>資料指令走 io_uring(通吃 interface);<code>rst/log/fwact</code> 為 NVMe 專屬。</p>
+  <pre><code><span class="cmt"># 單筆寫 / 讀 / trim(lba len,16 進位)</span>
+sudo ./build/DiskIOStress /dev/sdX w 1000 8
+sudo ./build/DiskIOStress /dev/sdX r 1000 8
+sudo ./build/DiskIOStress /dev/sdX t 1000 100
+
+<span class="cmt"># 循序 / 隨機 吞吐 profile(start end count)</span>
+sudo ./build/DiskIOStress /dev/sdX sw 0 100000 800     <span class="cmt"># 循序寫</span>
+sudo ./build/DiskIOStress /dev/sdX sr 0 100000 800     <span class="cmt"># 循序讀</span>
+sudo ./build/DiskIOStress /dev/sdX rw 0 100000 8       <span class="cmt"># 隨機寫</span>
+sudo ./build/DiskIOStress /dev/sdX rr 0 100000 8       <span class="cmt"># 隨機讀</span>
+
+<span class="cmt"># NVMe 專屬</span>
+sudo ./build/DiskIOStress /dev/nvme0n1 log 02          <span class="cmt"># SMART log</span>
+sudo ./build/DiskIOStress /dev/nvme0n1 rst 3           <span class="cmt"># controller reset x3</span>
+sudo ./build/DiskIOStress /dev/nvme0n1 fwact 1 1 2 fw.bin</code></pre>
+</section>
+
+<!-- ===================== POWER ===================== -->
+<section id="power">
+  <h2>3. Power-cycle(斷電完整性)</h2>
+  <p><code>pcwrite</code> 跑「寫 → 呼叫 power-hook 斷電 → 重開 → 掃描驗證 → loop」。先用 <code>--power-hook-dry-run</code> 不真的斷電把流程跑順。</p>
+
+  <h3>先 dry-run 把 loop 跑順(不斷電)</h3>
+  <pre><code>sudo ./build/DiskIOStress /dev/sdX pcwrite --ranges=0-1G --io-size=64K --qd=32 \
+     --cut-after=64M --cycles=2 --power-hook-dry-run</code></pre>
+
+  <h3>Sequential,只 graceful 斷電</h3>
+  <pre><code>sudo ./build/DiskIOStress /dev/sdX pcwrite --access=seq --ranges=0-4G \
+     --graceful-ratio=1.0 --cut-after=256M --power-hook=./power-hook.usb-sim.sh</code></pre>
+
+  <h3>Random,全 ungraceful(突然斷電)</h3>
+  <pre><code>sudo ./build/DiskIOStress /dev/sdX pcwrite --access=random --ranges=0-4G \
+     --graceful-ratio=0.0 --cut-after=256M --power-hook=./power-hook.usb-sim.sh</code></pre>
+
+  <h3>PLP 驗證(已完成的寫入必須存活,否則 FAIL)</h3>
+  <pre><code>sudo ./build/DiskIOStress /dev/sdX pcwrite --durability=plp --checkpoint-interval=256K \
+     --access=random --graceful-ratio=0.0 --cut-after=256M --power-hook=./power-hook.usb-sim.sh</code></pre>
+
+  <h3>重開後手動單獨掃描</h3>
+  <pre><code>sudo ./build/DiskIOStress /dev/sdX pcscan</code></pre>
+
+  <div class="callout">真實 ungraceful 需要會切 VBUS 的硬體 hook。<code>power-hook.usb-sim.sh</code> 只是 sysfs 邏輯斷線(不切電),足以跑流程但測不到真 cache 遺失。</div>
+</section>
+
+<!-- ===================== CONFIG ===================== -->
+<section id="conf">
+  <h2>4. 用設定檔(samples/)</h2>
+  <p>每組測試都有對應的設定檔,CLI 旗標可覆蓋檔案內的值。</p>
+  <pre><code><span class="cmt"># 壓力測試(無斷電):--config 在前,device 在後</span>
+sudo ./build/DiskIOStress --config=samples/no-power/seq-verify.conf  /dev/sdX
+sudo ./build/DiskIOStress --config=samples/no-power/4k-unaligned.conf /dev/sdX
+sudo ./build/DiskIOStress --config=samples/no-power/trim-mixed.conf  /dev/sdX
+
+<span class="cmt"># Power-cycle:pcwrite --config</span>
+sudo ./build/DiskIOStress /dev/sdX pcwrite --config=samples/with-power/plp-strict.conf
+sudo ./build/DiskIOStress /dev/sdX pcwrite --config=samples/with-power/rand-ungraceful.conf --cycles=50
+
+<span class="cmt"># 覆蓋設定檔的單一值(CLI &gt; config)</span>
+sudo ./build/DiskIOStress --config=samples/no-power/rand-verify.conf --io-size=128K /dev/sdX</code></pre>
+  <table>
+    <thead><tr><th>測試類型</th><th>無斷電 (no-power/)</th><th>斷電 (with-power/)</th></tr></thead>
+    <tbody>
+      <tr><td>Seq 讀寫驗證</td><td>seq-verify.conf</td><td>seq-graceful.conf</td></tr>
+      <tr><td>Random 讀寫驗證</td><td>rand-verify.conf</td><td>rand-ungraceful.conf</td></tr>
+      <tr><td>讀寫 mix</td><td>mix-rw.conf</td><td>4k-mixed-cuts.conf</td></tr>
+      <tr><td>4K 對齊</td><td>4k-aligned.conf</td><td>—</td></tr>
+      <tr><td>4K 非對齊</td><td>4k-unaligned.conf</td><td>—</td></tr>
+      <tr><td>4K 混合對齊</td><td>4k-mixed.conf</td><td>—</td></tr>
+      <tr><td>大 command</td><td>large-cmd.conf</td><td>large-cmd.conf</td></tr>
+      <tr><td>Trim mixed</td><td>trim-mixed.conf</td><td>—</td></tr>
+      <tr><td>PLP 驗證</td><td>—</td><td>plp-strict.conf</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</div>
+<footer>DiskIOStress · samples/command-samples.html</footer>
+</body>
+</html>
