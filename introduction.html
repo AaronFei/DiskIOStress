@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>DiskIOStress — 現況與架構總覽</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#1a1f29; --panel2:#232a36; --text:#e6e6e6; --muted:#9aa3b2;
+    --accent:#4fc3f7; --accent2:#ffb74d; --ok:#81c784; --bad:#e57373; --warn:#fff176;
+    --border:#2c3441; --code:#0b0e13;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif;background:var(--bg);color:var(--text);line-height:1.65}
+  header{background:linear-gradient(135deg,#1e3a5f,#0f1419);padding:34px 48px;border-bottom:1px solid var(--border)}
+  header h1{margin:0 0 8px;font-size:27px;color:#fff}
+  header .meta{color:var(--muted);font-size:14px}
+  .container{max-width:1180px;margin:0 auto;padding:30px 48px 80px}
+  nav.toc{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:18px 26px;margin-bottom:34px}
+  nav.toc h3{margin:0 0 10px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+  nav.toc ol{margin:0;padding-left:22px;columns:2;column-gap:32px}
+  nav.toc a{color:var(--accent);text-decoration:none}
+  nav.toc a:hover{text-decoration:underline}
+  section{margin-bottom:42px}
+  section h2{font-size:21px;color:var(--accent);border-left:4px solid var(--accent);padding-left:12px;margin:0 0 16px}
+  section h3{font-size:16px;color:var(--accent2);margin:22px 0 8px}
+  p{margin:8px 0} ul,ol{padding-left:22px} li{margin:4px 0}
+  code{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:.9em;background:var(--code);padding:2px 6px;border-radius:4px;color:#f0c674}
+  pre{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:15px 18px;overflow-x:auto;font-size:13px;line-height:1.5}
+  pre code{background:transparent;padding:0;color:#d4d4d4}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{padding:9px 13px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--accent2);font-weight:600}
+  tr:hover{background:rgba(255,255,255,.02)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin:16px 0}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px 20px}
+  .card h4{margin:0 0 8px;font-size:15px;color:var(--accent2)}
+  .card p{color:var(--muted);font-size:14px}
+  .badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600;margin-right:6px}
+  .b-ok{background:rgba(129,199,132,.18);color:var(--ok)}
+  .b-warn{background:rgba(255,241,118,.18);color:var(--warn)}
+  .b-bad{background:rgba(229,115,115,.18);color:var(--bad)}
+  .b-info{background:rgba(79,195,247,.18);color:var(--accent)}
+  .flow{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:20px;margin:16px 0;font-family:"SF Mono",Menlo,monospace;font-size:13px;line-height:1.9;white-space:pre;overflow-x:auto}
+  .callout{background:rgba(79,195,247,.06);border-left:3px solid var(--accent);padding:12px 18px;border-radius:4px;margin:12px 0;color:#cfd8dc}
+  .callout.warn{background:rgba(255,183,77,.06);border-color:var(--accent2)}
+  .callout.bad{background:rgba(229,115,115,.06);border-color:var(--bad)}
+  footer{text-align:center;color:var(--muted);font-size:13px;padding:24px;border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+<header>
+  <h1>DiskIOStress — 現況與架構總覽</h1>
+  <div class="meta">
+    Linux NVMe / SATA / USB 儲存資料完整性測試工具 ·
+    模組化 C (pthread + io_uring) ·
+    分支 <code>development/with_power</code> ·
+    更新：2026-05-20
+  </div>
+</header>
+
+<div class="container">
+
+<nav class="toc">
+  <h3>目錄</h3>
+  <ol>
+    <li><a href="#status">現況一句話</a></li>
+    <li><a href="#modes">三種模式</a></li>
+    <li><a href="#arch">模組化架構</a></li>
+    <li><a href="#tag">Sector Tag(共用核心)</a></li>
+    <li><a href="#stress">模式 1：壓力測試</a></li>
+    <li><a href="#single">模式 2：單一指令</a></li>
+    <li><a href="#power">模式 3：Power-cycle</a></li>
+    <li><a href="#durability">Durability:volatile vs PLP</a></li>
+    <li><a href="#hook">Power-control plugin</a></li>
+    <li><a href="#build">編譯與測試</a></li>
+    <li><a href="#done">完成度與限制</a></li>
+  </ol>
+</nav>
+
+<!-- =============================== -->
+<section id="status">
+  <h2>1. 現況一句話</h2>
+  <p>
+    這個專案從原本的「單檔、多執行緒 NVMe 壓力測試工具」演化成
+    <strong>模組化的儲存資料完整性測試框架</strong>，新增了一條
+    <strong>單執行緒 io_uring + O_DIRECT 的 power-cycle(斷電完整性)測試路線</strong>，
+    可同時涵蓋 NVMe / SATA / USB。每個 sector 都帶 32-byte 完整性 tag,讀回逐欄驗證。
+  </p>
+  <div class="grid">
+    <div class="card"><h4>✅ 已完成</h4><p>模組化重構、CLI/config、io_uring 引擎、range×access、journal、pcwrite/pcscan 編排、嚴格 PLP completion-level 追蹤。66 個單元測試全過。</p></div>
+    <div class="card"><h4>🔬 已驗證</h4><p>檔案層級 PASS/FAIL、真實 <code>/dev/sda</code> USB 上 io_uring+O_DIRECT、模擬斷電多 cycle、PLP 退版偵測。</p></div>
+    <div class="card"><h4>⚠️ 限制</h4><p>目前的模擬斷電不切 VBUS(測不到真 cache 遺失);真 ungraceful 需接實體切電 hook。</p></div>
+  </div>
+</section>
+
+<!-- =============================== -->
+<section id="modes">
+  <h2>2. 三種模式</h2>
+  <table>
+    <thead><tr><th>模式</th><th>指令</th><th>何時用</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge b-info">壓力測試</span></td><td><code>DiskIOStress [opts] &lt;dev&gt;</code></td><td>多執行緒持續 write/read/compare 轟一顆裝置(原工具)</td></tr>
+      <tr><td><span class="badge b-info">單一指令</span></td><td><code>DiskIOStress &lt;dev&gt; &lt;subcmd&gt;</code></td><td>一次性 NVMe 操作:read/write/trim、SMART、韌體、reset</td></tr>
+      <tr><td><span class="badge b-warn">Power-cycle</span></td><td><code>DiskIOStress &lt;dev&gt; pcwrite …</code></td><td>反覆斷電下的資料完整性(graceful+ungraceful、PLP 驗證)</td></tr>
+    </tbody>
+  </table>
+  <div class="callout bad"><strong>⚠️ 所有模式都直接寫 raw block device,會毀掉裝置上所有資料。</strong> 破壞性操作前會先列乾淨的裝置清單(實體碟 + model + 掛載點,排除 loop)並要求確認;若目標掛載著系統(<code>/</code> 或 <code>/boot</code>)會擋下來、要打出完整裝置路徑才放行,避免誤刪系統碟。</div>
+</section>
+
+<!-- =============================== -->
+<section id="arch">
+  <h2>3. 模組化架構</h2>
+  <p>原本 2,600+ 行的 <code>DiskIOStress.c</code> 已拆成 <code>include/</code> + <code>src/</code> 每模組一檔,並有 <code>tests/</code>(Unity)。</p>
+  <table>
+    <thead><tr><th>模組</th><th>職責</th></tr></thead>
+    <tbody>
+      <tr><td><code>config</code></td><td>CLI(getopt_long)+ INI config + 預設值,優先序 CLI &gt; config &gt; 預設;seed 可設可記錄</td></tr>
+      <tr><td><code>util</code></td><td>hex2dec、str_trim、<code>parse_size</code>(K/M/G/T)、<code>crc32</code></td></tr>
+      <tr><td><code>nvme_cmd</code></td><td>NVMe passthrough admin(identify/fw/log/reset/stream)— 僅 NVMe(資料路徑已不走這)</td></tr>
+      <tr><td><code>pattern</code></td><td>資料 pattern(含 addr)+ <code>fill_unit_payload</code> + <code>SectorTag_t</code> 戳記 + 解析式驗證 + 錯誤 dump</td></tr>
+      <tr><td><code>stress</code></td><td><span class="badge b-warn">新</span> 單執行緒 io_uring 壓測(write/verify pass,取代舊的 256-thread+ioctl <code>workload</code>)</td></tr>
+      <tr><td><code>subcommand</code></td><td>cmdList 與各 subcommand(含 pcwrite/pcscan 入口)</td></tr>
+      <tr><td><code>uring_engine</code></td><td><span class="badge b-warn">新</span> O_DIRECT io_uring 引擎:open/alloc/queue/submit/reap/flush(壓測+power-cycle 共用)</td></tr>
+      <tr><td><code>range</code></td><td><span class="badge b-warn">新</span> ranges/regions 解析、sequential + Feistel 全覆蓋隨機</td></tr>
+      <tr><td><code>journal</code></td><td><span class="badge b-warn">新</span> host 端 atomic 持久化(斷電真相來源)</td></tr>
+      <tr><td><code>powercycle</code></td><td><span class="badge b-warn">新</span> pcwrite 產生器 + pcscan 分類 + 編排迴圈</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- =============================== -->
+<section id="tag">
+  <h2>4. Sector Tag(三種模式共用核心)</h2>
+  <p>每個 sector 開頭埋 32-byte 結構化 tag,pattern 只填後面。讀回逐欄檢查,錯誤被<strong>精確分類</strong>而非籠統的 compare error。</p>
+  <table>
+    <thead><tr><th>欄位</th><th>抓什麼</th></tr></thead>
+    <tbody>
+      <tr><td><code>magic</code></td><td>sector 沒被寫過 / torn write(半寫)</td></tr>
+      <tr><td><code>lba</code></td><td>misdirected IO(資料跑到錯位址)</td></tr>
+      <tr><td><code>seed</code></td><td>上一次 run 的殘留資料</td></tr>
+      <tr><td><code>write_loop</code>(generation)</td><td><strong>stale data</strong>:LBA 對但世代是舊的</td></tr>
+      <tr><td><code>thread_id</code> / <code>trunk_index</code></td><td>cross-thread / cross-region 汙染</td></tr>
+      <tr><td><code>pattern</code> / <code>workload</code></td><td>run-level metadata 一致性</td></tr>
+      <tr><td><code>payload_crc</code>(CRC32)</td><td>sector body bit-rot</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">power-cycle 模式把 <code>write_loop</code> 當作 <strong>generation counter</strong> 使用 —— 這是斷電後判定「哪些資料該存活」的關鍵。</div>
+</section>
+
+<!-- =============================== -->
+<section id="stress">
+  <h2>5. 模式 1：壓力測試</h2>
+  <pre><code>sudo ./build/DiskIOStress /dev/sdb
+sudo ./build/DiskIOStress --qd=64 --io-size=128K --pattern=addr --ranges=0-4G /dev/nvme0n1</code></pre>
+  <p><strong>單執行緒 io_uring + O_DIRECT</strong>(block 層,通吃 NVMe/SATA/USB)持續 write→read→verify,每個 loop 一個 generation。並發來自 io_uring 的 queue depth(<code>--qd</code>),不再開多執行緒。Workload:<code>seq_wrc</code> / <code>seq_wrrc</code> / <code>seq_w1rcn</code>(retention)/ <code>rand_wrc</code>(預設,Feistel 全覆蓋隨機)。Pattern 多 12 種含新的 <code>addr</code>(自我描述,好 debug)。</p>
+  <div class="callout warn"><code>--threads</code> / <code>--trunk-size</code> 仍可接受但已忽略(並發改由 <code>--qd</code> 控制)。改 block 層後壓測模式不再測 NVMe stream write-hint。</div>
+</section>
+
+<!-- =============================== -->
+<section id="single">
+  <h2>6. 模式 2：單一指令</h2>
+  <pre><code>sudo ./build/DiskIOStress &lt;dev&gt; &lt;subcmd&gt; [args…]   # 數值參數為 16 進位</code></pre>
+  <p><code>w</code>/<code>r</code>/<code>t</code>(單筆寫/讀/trim)、<code>sw</code>/<code>sr</code>(循序吞吐)、<code>rw</code>/<code>rr</code>(隨機吞吐)走 <strong>io_uring,通吃所有 transport</strong>(<code>t</code> 用通用 <code>BLKDISCARD</code>);<code>rst</code>(reset)、<code>log</code>(SMART=0x02)、<code>fwact</code>(韌體)為 NVMe 專屬。</p>
+</section>
+
+<!-- =============================== -->
+<section id="power">
+  <h2>7. 模式 3：Power-cycle 測試 <span class="badge b-warn">重點</span></h2>
+  <pre><code>sudo ./build/DiskIOStress /dev/sdb pcwrite \
+     --ranges=0-1G --access=random --io-size=64K --qd=32 \
+     --durability=plp --checkpoint-interval=1M \
+     --cut-after=64M --graceful-ratio=0.5 --cycles=100 \
+     --power-hook=./power-hook.example.sh
+# 或把整組設定寫進 INI:
+sudo ./build/DiskIOStress /dev/sdb pcwrite --config=powercycle.conf.example</code></pre>
+
+  <h3>7.1 一個 cycle 的流程</h3>
+  <div class="flow">寫帶 tag 的資料 (QD 深)
+   │  (依 ranges × access 走 unit,每寫一輪 generation +1)
+   ▼
+呼叫 power-hook  cut-graceful / cut-ungraceful   ← 你的斷電腳本
+   ▼
+呼叫 power-hook  restore  →  等 /dev/... 回來
+   ▼
+pcscan 讀回全範圍 → 逐 unit 分類 → PASS / FAIL
+   ▼
+loop(下一個 cycle)</div>
+
+  <h3>7.2 generation + journal 判定模型</h3>
+  <p>一個 <strong>pass</strong> 把 range 內每個 unit 恰好重寫一次(循序,或 Feistel 全覆蓋隨機),然後 generation 進位 —— 所以同一區同時最多只有兩個世代(G 與 G-1)。host 端 <strong>journal</strong>(atomic 寫、放在受測碟之外,才能撐過斷電)記錄世代與 pass 的 durable 進度:</p>
+  <div class="flow">pos &lt; durable_units              → 必須是世代 G   (已 durable,必須存活)
+durable_units ≤ pos &lt; submitted  → at-risk 窗口   (G 或 G-1 都可接受)
+pos ≥ submitted                  → 這輪還沒寫到   (應為 G-1)</div>
+  <p>斷電重開後 pcscan 把每個 unit 歸類為:<span class="badge b-ok">newest(G)</span> <span class="badge b-info">prev(G-1)</span> <span class="badge b-info">acceptable(at-risk 內的 in-flight 遺失)</span> <span class="badge b-bad">stale(durable 資料遺失=失敗)</span> <span class="badge b-bad">corrupt(magic/CRC/LBA=半寫或損壞)</span>。<strong>PASS ⟺ stale==0 且 corrupt==0</strong>。</p>
+</section>
+
+<!-- =============================== -->
+<section id="durability">
+  <h2>8. Durability:volatile vs PLP</h2>
+  <table>
+    <thead><tr><th></th><th>volatile(一般 SSD)</th><th>plp(電容保護 SSD)</th></tr></thead>
+    <tbody>
+      <tr><td>durable 定義</td><td>已 <strong>flush</strong></td><td>已 <strong>complete</strong>(caps 保證落地)</td></tr>
+      <tr><td>durable 推進</td><td>flush 完成時(<code>--flush-interval</code> 粒度)</td><td><strong>每個 io_uring completion 前綴</strong>,每 <code>--checkpoint-interval</code> 持久化</td></tr>
+      <tr><td>可接受遺失窗口</td><td>上次 flush 之後的所有寫入</td><td>只剩斷電當下真正 in-flight(≈ QD)</td></tr>
+      <tr><td>已完成寫入遺失</td><td>可能落在 at-risk → 被吞</td><td><strong>落在 durable → 判 FAIL</strong></td></tr>
+      <tr><td>checkpoint 單位</td><td colspan="2"><code>--checkpoint-interval</code>(plp)與 <code>--flush-interval</code>(volatile)皆為 <strong>bytes</strong>,可加 K/M/G/T(1024 進位),預設 1M。意義:已完成資料每累積這麼多 bytes,就把 durable 點寫進 journal 一次 —— 越小越嚴格,代價是更多 journal fsync。</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">PLP 模式是一個<strong>斷言</strong>:你宣告「這是 PLP 碟」,測試就驗證「每個已完成的寫入都存活」。已驗證:把一個 durable 區的 unit 退回前一世代 → <span class="badge b-bad">FAIL</span>;同一份資料若落在 at-risk 窗口 → <span class="badge b-ok">PASS</span>。completion-level 邊界正是嚴格性的來源。</div>
+</section>
+
+<!-- =============================== -->
+<section id="hook">
+  <h2>9. Power-control plugin</h2>
+  <p>pcwrite 在每個電源事件呼叫你的外部腳本,介面是<strong>位置參數 + 環境變數混合</strong>:</p>
+  <pre><code>power-hook.sh &lt;verb&gt; &lt;device&gt;     # verb = cut-graceful | cut-ungraceful | restore
+   env: DIOS_GENERATION DIOS_CYCLE DIOS_PHASE DIOS_TIMEOUT DIOS_DRY_RUN
+   exit 0 = 成功,非 0 = 中止測試</code></pre>
+  <ul>
+    <li><code>power-hook.example.sh</code> — 範例模板(uhubctl / GPIO 繼電器 / 網路 PDU / rtcwake 範例)</li>
+    <li><code>power-hook.usb-sim.sh</code> — 用 sysfs <code>authorized</code> 開關模擬 USB 斷線(<strong>不切 VBUS</strong>)</li>
+  </ul>
+  <div class="callout warn"><strong>真 ungraceful 要硬體切 VBUS。</strong> sysfs 模擬只是邏輯斷線,drive cache 不會真的掉電,足以跑通 disappear→reappear→rescan 迴圈,但證不了真實 ungraceful / PLP 行為。</div>
+</section>
+
+<!-- =============================== -->
+<section id="build">
+  <h2>10. 編譯與測試</h2>
+  <pre><code>sudo apt install liburing-dev      # 需求:liburing(build 時)、kernel ≥ 5.1
+make            # → build/DiskIOStress
+make test       # build + 跑 Unity 單元測試(66 個)
+make clean      # 清掉 build/ 與產出 log</code></pre>
+  <p>單元測試涵蓋:hex/size 解析、config 解析、pattern + tag 戳記/驗證、io_uring 引擎、range/permutation(雙射全覆蓋)、journal、power-cycle 分類。</p>
+</section>
+
+<!-- =============================== -->
+<section id="done">
+  <h2>11. 完成度與限制</h2>
+  <div class="grid">
+    <div class="card"><h4><span class="badge b-ok">DONE</span> 核心功能</h4><p>模組化、CLI/config、io_uring O_DIRECT、ranges×access、generation journal、pcwrite/pcscan、嚴格 PLP completion-level、power-hook 插件。</p></div>
+    <div class="card"><h4><span class="badge b-ok">DONE</span> 驗證</h4><p>66 unit tests;檔案層級 PASS/FAIL;真實 USB io_uring;模擬斷電多 cycle;PLP 退版偵測對照。</p></div>
+    <div class="card"><h4><span class="badge b-warn">TODO</span> 真實斷電</h4><p>需接會切 VBUS 的硬體 hook(繼電器 / 可切電 hub / PDU)才能測真 ungraceful 與真 PLP。</p></div>
+    <div class="card"><h4><span class="badge b-warn">TODO</span> PLP persist lag</h4><p>PLP 唯一殘留不確定性是 journal 的 fsync 間隔,可用 <code>--checkpoint-interval</code> 收緊(代價是更多 fsync)。</p></div>
+  </div>
+</section>
+
+</div>
+<footer>DiskIOStress · 由原始碼與實測產生 · development/with_power</footer>
+</body>
+</html>
