@@ -41,7 +41,7 @@ sudo ./build/DiskIOStress /dev/sdX pcwrite --config=samples/with-power/<file>.co
 | `4k-mixed-cuts.conf`    | 4K random, mixed graceful/ungraceful, PLP |
 | `large-cmd.conf`        | 1 MiB commands across power cuts |
 
-The `power_hook` defaults to `./power-hook.usb-sim.sh` (a *simulated* USB
+The `power_hook` defaults to `./examples/power-hook.usb-sim.sh` (a *simulated* USB
 disconnect — not a real VBUS cut). Point it at your real power-control script
 for true ungraceful testing.
 

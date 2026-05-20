@@ -154,7 +154,7 @@ void show_usage(int argc, char* argv[])
     printf("Usage: %s [options] <device>                       (stress test mode)\n", argv[0]);
     printf("Usage: %s [options] <device> <subcmd> [args...]    (single-command mode)\n", argv[0]);
     printf("Example: %s --qd=64 --io-size=128K --pattern=addr /dev/sdb\n", argv[0]);
-    printf("Example: %s --config=DiskIOStress.conf /dev/nvme0n1\n", argv[0]);
+    printf("Example: %s --config=examples/DiskIOStress.conf.example /dev/nvme0n1\n", argv[0]);
     printf("\n");
     printf("Stress options (single-thread io_uring, works on NVMe/SATA/USB):\n");
     printf("  -c, --config=PATH        Load INI-style config file\n");

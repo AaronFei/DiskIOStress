@@ -191,9 +191,9 @@ sudo ./build/DiskIOStress --qd=64 --io-size=128K --pattern=addr --ranges=0-4G /d
      --ranges=0-1G --access=random --io-size=64K --qd=32 \
      --durability=plp --checkpoint-interval=1M \
      --cut-after=64M --graceful-ratio=0.5 --cycles=100 \
-     --power-hook=./power-hook.example.sh
+     --power-hook=./examples/power-hook.example.sh
 # 或把整組設定寫進 INI:
-sudo ./build/DiskIOStress /dev/sdb pcwrite --config=powercycle.conf.example</code></pre>
+sudo ./build/DiskIOStress /dev/sdb pcwrite --config=examples/powercycle.conf.example</code></pre>
 
   <div class="callout"><strong>跟模式 1 的 workload 是兩件事。</strong> 共用 sector tag 與 io_uring 引擎,但問的問題不同 —— workload 測「正常讀寫資料對不對」,power-cycle 測「斷電後 host 認定已落地的資料還在不在」。<code>graceful</code>/<code>ungraceful</code> <em>不是</em> workload,是這個模式的兩種<em>關機方式</em>;這裡<strong>不看 <code>--workload</code></strong>,存取樣式改用 <code>--access=seq|random</code>。</div>
   <table>
@@ -266,8 +266,8 @@ pos ≥ submitted                  → 這輪還沒寫到   (應為 G-1)</div>
    env: DIOS_GENERATION DIOS_CYCLE DIOS_PHASE DIOS_TIMEOUT DIOS_DRY_RUN
    exit 0 = 成功,非 0 = 中止測試</code></pre>
   <ul>
-    <li><code>power-hook.example.sh</code> — 範例模板(uhubctl / GPIO 繼電器 / 網路 PDU / rtcwake 範例)</li>
-    <li><code>power-hook.usb-sim.sh</code> — 用 sysfs <code>authorized</code> 開關模擬 USB 斷線(<strong>不切 VBUS</strong>)</li>
+    <li><code>examples/power-hook.example.sh</code> — 範例模板(uhubctl / GPIO 繼電器 / 網路 PDU / rtcwake 範例)</li>
+    <li><code>examples/power-hook.usb-sim.sh</code> — 用 sysfs <code>authorized</code> 開關模擬 USB 斷線(<strong>不切 VBUS</strong>)</li>
   </ul>
   <div class="callout warn"><strong>真 ungraceful 要硬體切 VBUS。</strong> sysfs 模擬只是邏輯斷線,drive cache 不會真的掉電,足以跑通 disappear→reappear→rescan 迴圈,但證不了真實 ungraceful / PLP 行為。</div>
 </section>

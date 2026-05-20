@@ -40,7 +40,7 @@ graceful_ratio = 0.5    # fraction of cuts that are graceful (0..1)
 cycles         = 0      # number of power cycles (0 = infinite)
 
 # ---- Plumbing ----
-power_hook = ./power-hook.usb-sim.sh   # your power-control script
+power_hook = ./examples/power-hook.usb-sim.sh   # your power-control script
 # journal  = /var/lib/diskiostress/sdb.journal   # default: /tmp/diskiostress-<dev>.journal
 pattern    = addr      # random | addr (self-describing) | zero | one | inc_dword | ...
 seed       = 0         # 0 = derive from time() and log it

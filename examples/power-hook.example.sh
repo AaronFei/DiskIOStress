@@ -3,13 +3,13 @@
 # DiskIOStress power-control hook (template)
 # -----------------------------------------------------------------------------
 # Register this script with:
-#     ./DiskIOStress pcwrite --power-hook=./power-hook.example.sh ...
-#   (or in the config file:  power_hook = ./power-hook.example.sh)
+#     ./DiskIOStress pcwrite --power-hook=./examples/power-hook.example.sh ...
+#   (or in the config file:  power_hook = ./examples/power-hook.example.sh)
 #
 # The tool calls this script as:
 #     power-hook.sh <verb> <device>
 #   i.e. the two most-used values are positional args (easy to test by hand:
-#   `./power-hook.example.sh cut-ungraceful /dev/sdb`). All remaining context is
+#   `./examples/power-hook.example.sh cut-ungraceful /dev/sdb`). All remaining context is
 #   passed via environment variables, so new fields can be added later without
 #   breaking the positional contract. Implement the verbs your hardware supports.
 #

@@ -96,7 +96,7 @@ Settings come from **CLI > config file > built-in defaults**:
 
 | Option               | Meaning                              |
 |----------------------|--------------------------------------|
-| `-c, --config=PATH`  | load an INI config file (`DiskIOStress.conf.example`) |
+| `-c, --config=PATH`  | load an INI config file (`examples/DiskIOStress.conf.example`) |
 | `-q, --qd=N`         | io_uring queue depth (default 32)    |
 | `-I, --io-size=N`    | IO unit size, bytes/K/M (default 64K) |
 | `--ranges=`          | `whole` (default), or `0-1G,4G-5G`   |
@@ -263,7 +263,7 @@ sudo ./build/DiskIOStress /dev/sdb pcwrite \
      --ranges=0-1G --access=random --io-size=64K --qd=32 \
      --durability=plp --checkpoint-interval=1M \
      --cut-after=64M --graceful-ratio=0.5 --cycles=100 \
-     --power-hook=./power-hook.example.sh
+     --power-hook=./examples/power-hook.example.sh
 ```
 
 What one cycle does:
@@ -324,7 +324,7 @@ same `acceptable` count.)
 
 | Option | Meaning |
 |--------|---------|
-| `--config=PATH` | load a power-cycle INI (see `powercycle.conf.example`); CLI overrides it |
+| `--config=PATH` | load a power-cycle INI (see `examples/powercycle.conf.example`); CLI overrides it |
 | `--ranges=` | `whole`, or `0-1G,4G-5G` (byte ranges, K/M/G/T suffix) |
 | `--regions=N --region-size=` | N equal regions spread across the device |
 | `--access=seq\|random` | sequential-cyclic, or full-coverage random per pass |
@@ -337,7 +337,7 @@ same `acceptable` count.)
 | `--cut-jitter=` | per-cycle seeded random extra on top of `--cut-after` (default 0 = fixed). Size or duration; cut = `cut_after + rand(0..jitter)`, never shorter, replayable |
 | `--graceful-ratio=` | fraction of cuts that are graceful vs ungraceful, `0..1` (default 0.5; seeded → reproducible) |
 | `--cycles=N` | number of cycles (0 = infinite) |
-| `--power-hook=` | your power-control script (see `power-hook.example.sh`) |
+| `--power-hook=` | your power-control script (see `examples/power-hook.example.sh`) |
 | `--power-hook-dry-run` | run the loop without actually cutting power |
 | `--no-direct` | disable `O_DIRECT` (e.g. testing on a regular file) |
 
@@ -382,7 +382,7 @@ LBA mismatch = torn write or media damage). The test **passes iff
 ### Power-control plugin
 
 `pcwrite` calls your external script at each event. Contract (see
-`power-hook.example.sh`, and `power-hook.usb-sim.sh` for a software-simulated USB
+`examples/power-hook.example.sh`, and `examples/power-hook.usb-sim.sh` for a software-simulated USB
 cut):
 
 ```
@@ -392,7 +392,7 @@ power-hook.sh <verb> <device>          # verb ∈ cut-graceful | cut-ungraceful 
 ```
 
 > **Note:** a *real* ungraceful test needs hardware that actually cuts VBUS/power.
-> `power-hook.usb-sim.sh` only toggles the USB `authorized` flag (logical
+> `examples/power-hook.usb-sim.sh` only toggles the USB `authorized` flag (logical
 > disconnect) — enough to exercise the disappear→reappear→rescan loop, but it does
 > **not** power-cycle the drive's cache, so it can't prove true ungraceful behaviour.
 
@@ -441,12 +441,13 @@ include/   module headers (types, config, util, nvme_cmd, disk_io, pattern,
 src/       implementation — one .c per module
 tests/     Unity unit tests (tests/unity/ = vendored framework)
 build/     build output (git-ignored)
-DiskIOStress.conf.example   stress-mode config template
-powercycle.conf.example     power-cycle (pcwrite/pcscan) config template
-power-hook.example.sh       power-control hook template
-power-hook.usb-sim.sh       software-simulated USB power-cycle hook
-samples/                    ready-to-edit configs per test case + command-samples.html
-introduction.html          architecture / status overview (open in a browser)
+examples/  config templates + power-control hooks:
+             DiskIOStress.conf.example   stress-mode config template
+             powercycle.conf.example     power-cycle (pcwrite/pcscan) config template
+             power-hook.example.sh       power-control hook template
+             power-hook.usb-sim.sh       software-simulated USB power-cycle hook
+samples/   ready-to-edit configs per test case + command-samples.html
+docs/      introduction.html — architecture / status overview (open in a browser)
 ```
 
 ## Tests

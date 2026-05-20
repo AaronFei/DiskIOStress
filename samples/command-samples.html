@@ -125,15 +125,15 @@ sudo ./build/DiskIOStress /dev/nvme0n1 fwact 1 1 2 fw.bin</code></pre>
 
   <h3>Sequential,只 graceful 斷電</h3>
   <pre><code>sudo ./build/DiskIOStress /dev/sdX pcwrite --access=seq --ranges=0-4G \
-     --graceful-ratio=1.0 --cut-after=256M --power-hook=./power-hook.usb-sim.sh</code></pre>
+     --graceful-ratio=1.0 --cut-after=256M --power-hook=./examples/power-hook.usb-sim.sh</code></pre>
 
   <h3>Random,全 ungraceful(突然斷電)</h3>
   <pre><code>sudo ./build/DiskIOStress /dev/sdX pcwrite --access=random --ranges=0-4G \
-     --graceful-ratio=0.0 --cut-after=256M --power-hook=./power-hook.usb-sim.sh</code></pre>
+     --graceful-ratio=0.0 --cut-after=256M --power-hook=./examples/power-hook.usb-sim.sh</code></pre>
 
   <h3>PLP 驗證(已完成的寫入必須存活,否則 FAIL)</h3>
   <pre><code>sudo ./build/DiskIOStress /dev/sdX pcwrite --durability=plp --checkpoint-interval=256K \
-     --access=random --graceful-ratio=0.0 --cut-after=256M --power-hook=./power-hook.usb-sim.sh</code></pre>
+     --access=random --graceful-ratio=0.0 --cut-after=256M --power-hook=./examples/power-hook.usb-sim.sh</code></pre>
 
   <h3>重開後手動單獨掃描</h3>
   <pre><code>sudo ./build/DiskIOStress /dev/sdX pcscan</code></pre>
